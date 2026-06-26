@@ -1,100 +1,43 @@
-import { useEffect, useState } from 'react';
-import { Book, FlaskConical, LogOut } from 'lucide-react';
+import { useState } from 'react';
+import { Book, FlaskConical } from 'lucide-react';
 import LearningPage from './components/LearningPage';
 import HandsOnLabPage from './components/HandsOnLabPage';
 import LoginPage from './components/LoginPage';
 import SignupPage from './components/SignupPage';
-import { Button } from './components/ui/button';
 import { Avatar, AvatarFallback } from './components/ui/avatar';
-import { authenticateUser, registerUser } from './auth';
-import { hasSupabaseConfig, supabase } from './lib/supabaseClient';
+import { readCurrentUser, writeCurrentUser, clearCurrentUser, registerUser, authenticateUser } from './auth';
 
 export default function App() {
+  const stored = readCurrentUser();
+  const [currentUser, setCurrentUser] = useState<{ name: string; email: string } | null>(stored);
   const [currentPage, setCurrentPage] = useState<'learning' | 'lab'>('learning');
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [user, setUser] = useState<{ name: string; email: string } | null>(null);
   const [authView, setAuthView] = useState<'login' | 'signup'>('login');
-
-  useEffect(() => {
-    const supabaseClient = supabase;
-
-    if (!hasSupabaseConfig || !supabaseClient) {
-      return;
-    }
-
-    let isMounted = true;
-
-    const syncSession = async () => {
-      const { data } = await supabaseClient.auth.getSession();
-      const sessionUser = data.session?.user;
-
-      if (!isMounted || !sessionUser) {
-        return;
-      }
-
-      setUser({
-        name:
-          (sessionUser.user_metadata?.full_name as string | undefined) ||
-          (sessionUser.user_metadata?.name as string | undefined) ||
-          sessionUser.email ||
-          'User',
-        email: sessionUser.email ?? '',
-      });
-      setIsAuthenticated(true);
-    };
-
-    syncSession();
-
-    const { data: authListener } = supabaseClient.auth.onAuthStateChange((_event, session) => {
-      const sessionUser = session?.user;
-
-      if (!isMounted || !sessionUser) {
-        return;
-      }
-
-      setUser({
-        name:
-          (sessionUser.user_metadata?.full_name as string | undefined) ||
-          (sessionUser.user_metadata?.name as string | undefined) ||
-          sessionUser.email ||
-          'User',
-        email: sessionUser.email ?? '',
-      });
-      setIsAuthenticated(true);
-    });
-
-    return () => {
-      isMounted = false;
-      authListener.subscription.unsubscribe();
-    };
-  }, []);
 
   const handleLogin = async (email: string, password: string) => {
     const result = await authenticateUser(email, password);
-
     if (result.success && result.user) {
-      setUser(result.user);
-      setIsAuthenticated(true);
+      writeCurrentUser(result.user);
+      setCurrentUser(result.user);
     }
-
     return result;
   };
 
   const handleSignup = async (name: string, email: string, password: string) => {
-    return registerUser(name, email, password);
+    const result = await registerUser(name, email, password);
+    if (result.success && result.user) {
+      writeCurrentUser(result.user);
+      setCurrentUser(result.user);
+    }
+    return result;
   };
 
-  const handleLogout = async () => {
-    if (supabase) {
-      await supabase.auth.signOut();
-    }
-
-    setUser(null);
-    setIsAuthenticated(false);
+  const handleLogout = () => {
+    clearCurrentUser();
+    setCurrentUser(null);
     setAuthView('login');
   };
 
-  if (!isAuthenticated) {
+  if (!currentUser) {
     return authView === 'login' ? (
       <LoginPage onLogin={handleLogin} onSwitchToSignup={() => setAuthView('signup')} />
     ) : (
@@ -121,18 +64,20 @@ export default function App() {
             <div className="flex items-center gap-2">
               <Avatar className="w-8 h-8">
                 <AvatarFallback className="bg-orange-100 text-orange-700">
-                  {user?.name.charAt(0) || 'U'}
+                  {currentUser?.name.charAt(0) || 'U'}
                 </AvatarFallback>
               </Avatar>
               <div className="text-sm">
-                <p className="font-medium text-slate-900">{user?.name}</p>
-                <p className="text-xs text-slate-500">{user?.email}</p>
+                <p className="font-medium text-slate-900">{currentUser?.name}</p>
+                <p className="text-xs text-slate-500">{currentUser?.email}</p>
               </div>
             </div>
-            <Button variant="outline" size="sm" onClick={handleLogout}>
-              <LogOut className="w-4 h-4 mr-2" />
-              Logout
-            </Button>
+            <button
+              onClick={handleLogout}
+              className="text-sm font-medium text-orange-600 hover:text-orange-700"
+            >
+              Sign out
+            </button>
           </div>
         </div>
       </header>

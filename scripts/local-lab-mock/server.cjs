@@ -1,0 +1,138 @@
+const express = require('express');
+const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
+const { STSClient, AssumeRoleCommand } = require('@aws-sdk/client-sts');
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+function loadEnvFile(filePath) {
+  if (!fs.existsSync(filePath)) return;
+  const content = fs.readFileSync(filePath, 'utf8');
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const equalsIndex = trimmed.indexOf('=');
+    if (equalsIndex === -1) continue;
+    const key = trimmed.slice(0, equalsIndex).trim();
+    const value = trimmed.slice(equalsIndex + 1).trim();
+    if (key) {
+      process.env[key] = value;
+      const normalizedKey = key.toUpperCase();
+      if (normalizedKey !== key) process.env[normalizedKey] = value;
+    }
+  }
+}
+
+loadEnvFile(path.resolve(process.cwd(), '.env.local'));
+
+function makeFakeCredentials() {
+  return {
+    accessKeyId: `ASIA${Math.random().toString(36).slice(2,12).toUpperCase()}`,
+    secretAccessKey: Math.random().toString(36).slice(2,40),
+    sessionToken: Math.random().toString(36).repeat(4).slice(0,200),
+    expiration: new Date(Date.now() + 3600 * 1000).toISOString(),
+  };
+}
+
+async function assumeSandboxRole(sessionName) {
+  const {
+    BACKEND_AWS_ACCESS_KEY_ID,
+    BACKEND_AWS_SECRET_ACCESS_KEY,
+    AWS_LAB_ROLE_ARN,
+  } = process.env;
+
+  if (!BACKEND_AWS_ACCESS_KEY_ID || !BACKEND_AWS_SECRET_ACCESS_KEY || !AWS_LAB_ROLE_ARN) {
+    console.warn('[lab] Missing backend credentials or role ARN — using fake credentials');
+    return makeFakeCredentials();
+  }
+
+  const sts = new STSClient({
+    region: 'ap-south-1',
+    credentials: {
+      accessKeyId: BACKEND_AWS_ACCESS_KEY_ID,
+      secretAccessKey: BACKEND_AWS_SECRET_ACCESS_KEY,
+    },
+  });
+
+  const response = await sts.send(new AssumeRoleCommand({
+    RoleArn: AWS_LAB_ROLE_ARN,
+    RoleSessionName: sessionName,
+    DurationSeconds: 900,
+  }));
+
+  const creds = response.Credentials;
+  return {
+    accessKeyId: creds.AccessKeyId,
+    secretAccessKey: creds.SecretAccessKey,
+    sessionToken: creds.SessionToken,
+    expiration: creds.Expiration ? creds.Expiration.toISOString() : new Date(Date.now() + 3600 * 1000).toISOString(),
+  };
+}
+
+async function buildLoginUrl(credentials, destination) {
+  const sessionJSON = JSON.stringify({
+    sessionId: credentials.accessKeyId,
+    sessionKey: credentials.secretAccessKey,
+    sessionToken: credentials.sessionToken,
+  });
+
+  const tokenUrl = `https://signin.aws.amazon.com/federation?Action=getSigninToken&Session=${encodeURIComponent(sessionJSON)}`;
+  const tokenRes = await fetch(tokenUrl);
+  if (!tokenRes.ok) return null;
+
+  const tokenData = await tokenRes.json();
+  const signinToken = tokenData && tokenData.SigninToken;
+  if (!signinToken) return null;
+
+  return `https://signin.aws.amazon.com/federation?Action=login&Issuer=LearningLabPlatform&Destination=${encodeURIComponent(destination)}&SigninToken=${encodeURIComponent(signinToken)}`;
+}
+
+app.post('/start-lab', async (req, res) => {
+  const sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+  const destination = (req.body && req.body.destination) || process.env.VITE_AWS_CONSOLE_DESTINATION || '';
+  const accountId = process.env.LAB_ACCOUNT_ID || '';
+  const accountName = process.env.LAB_ACCOUNT_NAME || '';
+
+  console.log('[lab] start-lab ->', sessionId);
+
+  try {
+    // Each intern gets a unique STS session — credentials are never shared
+    const sessionName = `intern-${Date.now()}`;
+    const credentials = await assumeSandboxRole(sessionName);
+
+    let loginUrl = null;
+    if (destination) {
+      try {
+        loginUrl = await buildLoginUrl(credentials, destination);
+      } catch (e) {
+        console.error('[lab] federation URL failed ->', e.message);
+      }
+    }
+
+    res.json({
+      sessionId,
+      credentials,
+      ...(accountName ? { accountName } : {}),
+      ...(accountId ? { accountId } : {}),
+      ...(destination ? { consoleUrl: destination } : {}),
+      ...(loginUrl ? { loginUrl } : {}),
+    });
+
+    console.log('[lab] credentials issued ->', sessionName);
+  } catch (error) {
+    console.error('[lab] start-lab error ->', error.message);
+    res.status(500).json({ error: 'Failed to generate lab credentials', details: error.message });
+  }
+});
+
+app.post('/stop-lab', (req, res) => {
+  const { sessionId } = req.body || {};
+  console.log('[lab] stop-lab ->', sessionId);
+  res.json({ success: true });
+});
+
+const port = process.env.PORT || 8787;
+app.listen(port, () => console.log(`[lab] Server running on http://localhost:${port}`));

@@ -1,119 +1,118 @@
-// @ts-nocheck
-// Deno edge function - TypeScript errors expected when analyzed by Node.js tooling
-
-// @ts-expect-error - Deno types not available in this context
-import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
-// @ts-expect-error - ESM imports not recognized
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-// @ts-expect-error - ESM imports not recognized
-import { STS } from 'https://esm.sh/aws-sdk@2.1450.0';
-
 const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-serve(async (req: Request) => {
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
+function json(data: unknown, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
+function extractXml(xml: string, tag: string): string {
+  const match = xml.match(new RegExp(`<${tag}[^>]*>(.*?)<\/${tag}>`));
+  return match ? match[1] : "";
+}
+
+const enc = new TextEncoder();
+
+async function hmac(key: ArrayBuffer, msg: string): Promise<ArrayBuffer> {
+  const k = await crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return crypto.subtle.sign("HMAC", k, enc.encode(msg));
+}
+
+async function hash(msg: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-256", enc.encode(msg));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+function toHex(buf: ArrayBuffer): string {
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function stsAssumeRole(accessKeyId: string, secretAccessKey: string, roleArn: string, sessionName: string) {
+  const body = new URLSearchParams({
+    Action: "AssumeRole",
+    RoleArn: roleArn,
+    RoleSessionName: sessionName,
+    DurationSeconds: "900",
+    Version: "2011-06-15",
+  }).toString();
+
+  const now = new Date();
+  const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, "").slice(0, 15) + "Z";
+  const dateStamp = amzDate.slice(0, 8);
+  const bodyHash = await hash(body);
+  const canonicalHeaders = `content-type:application/x-www-form-urlencoded\nhost:sts.amazonaws.com\nx-amz-date:${amzDate}\n`;
+  const signedHeaders = "content-type;host;x-amz-date";
+  const canonicalRequest = ["POST", "/", "", canonicalHeaders, signedHeaders, bodyHash].join("\n");
+  const credentialScope = `${dateStamp}/us-east-1/sts/aws4_request`;
+  const stringToSign = ["AWS4-HMAC-SHA256", amzDate, credentialScope, await hash(canonicalRequest)].join("\n");
+
+  let signingKey: ArrayBuffer = enc.encode(`AWS4${secretAccessKey}`).buffer as ArrayBuffer;
+  signingKey = await hmac(signingKey, dateStamp);
+  signingKey = await hmac(signingKey, "us-east-1");
+  signingKey = await hmac(signingKey, "sts");
+  signingKey = await hmac(signingKey, "aws4_request");
+
+  const signature = toHex(await hmac(signingKey, stringToSign));
+  const authHeader = `AWS4-HMAC-SHA256 Credential=${accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+  const res = await fetch("https://sts.amazonaws.com/", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", "x-amz-date": amzDate, "Authorization": authHeader },
+    body,
+  });
+
+  const xml = await res.text();
+  if (!res.ok) throw new Error(`STS error: ${extractXml(xml, "Message") || xml}`);
+
+  return {
+    accessKeyId: extractXml(xml, "AccessKeyId"),
+    secretAccessKey: extractXml(xml, "SecretAccessKey"),
+    sessionToken: extractXml(xml, "SessionToken"),
+    expiration: extractXml(xml, "Expiration"),
+  };
+}
+
+export default async function (req: Request) {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
   }
 
   try {
-    const supabaseClient = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
-      { global: { headers: { Authorization: req.headers.get('Authorization') ?? '' } } }
-    );
+    const body = await req.json().catch(() => ({} as Record<string, string>));
+    const destination = body?.destination || Deno.env.get("VITE_AWS_CONSOLE_DESTINATION") || "https://console.aws.amazon.com/console/home";
+    const accessKeyId = Deno.env.get("BACKEND_AWS_ACCESS_KEY_ID");
+    const secretAccessKey = Deno.env.get("BACKEND_AWS_SECRET_ACCESS_KEY");
+    const roleArn = Deno.env.get("AWS_LAB_ROLE_ARN");
 
-    const { data: { user }, error: userError } = await supabaseClient.auth.getUser();
-    if (userError || !user) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+    if (!accessKeyId || !secretAccessKey || !roleArn) {
+      return json({ error: "Backend AWS credentials not configured" }, 500);
     }
 
-    const { data: activeSessions } = await supabaseClient
-      .from('lab_sessions')
-      .select('*')
-      .eq('user_id', user.id)
-      .eq('status', 'active');
+    const sessionName = `intern-${Date.now()}`;
+    const credentials = await stsAssumeRole(accessKeyId, secretAccessKey, roleArn, sessionName);
 
-    if (activeSessions && activeSessions.length > 0) {
-      return new Response(JSON.stringify({ error: 'You already have an active session' }), {
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
+    const sessionJSON = JSON.stringify({ sessionId: credentials.accessKeyId, sessionKey: credentials.secretAccessKey, sessionToken: credentials.sessionToken });
+    const tokenRes = await fetch(`https://signin.aws.amazon.com/federation?Action=getSigninToken&Session=${encodeURIComponent(sessionJSON)}`);
+    const tokenData = tokenRes.ok ? await tokenRes.json() : null;
+    const signinToken = tokenData?.SigninToken;
+    const loginUrl = signinToken
+      ? `https://signin.aws.amazon.com/federation?Action=login&Issuer=LearningLabPlatform&Destination=${encodeURIComponent(destination)}&SigninToken=${encodeURIComponent(signinToken)}`
+      : null;
 
-    const sts = new STS({
-      region: Deno.env.get('AWS_REGION'),
-      credentials: {
-        accessKeyId: Deno.env.get('AWS_ACCESS_KEY_ID')!,
-        secretAccessKey: Deno.env.get('AWS_SECRET_ACCESS_KEY')!,
-      },
+    return json({
+      sessionId: sessionName,
+      credentials,
+      consoleUrl: destination,
+      accountId: Deno.env.get("LAB_ACCOUNT_ID") || "",
+      accountName: Deno.env.get("LAB_ACCOUNT_NAME") || "",
+      ...(loginUrl ? { loginUrl } : {}),
     });
-
-    const sessionId = crypto.randomUUID();
-    const expirationTime = Date.now() + 2 * 60 * 1000;
-
-    const assumeRoleParams = {
-      RoleArn: Deno.env.get('AWS_LAB_ROLE_ARN')!,
-      RoleSessionName: `lab-session-${sessionId}`,
-      DurationSeconds: 120,
-      ExternalId: 'learning-lab-platform',
-      Tags: [
-        { Key: 'Environment', Value: 'LearningLab' },
-        { Key: 'SessionId', Value: sessionId },
-        { Key: 'UserId', Value: user.id },
-        { Key: 'ExpirationTime', Value: expirationTime.toString() },
-      ],
-    };
-
-    const stsResponse = await sts.assumeRole(assumeRoleParams).promise();
-
-    const { data: session, error: sessionError } = await supabaseClient
-      .from('lab_sessions')
-      .insert({
-        user_id: user.id,
-        status: 'active',
-        start_time: new Date().toISOString(),
-        end_time: new Date(expirationTime).toISOString(),
-        aws_access_key_id: stsResponse.Credentials!.AccessKeyId,
-        aws_session_token: stsResponse.Credentials!.SessionToken,
-        aws_region: Deno.env.get('AWS_REGION'),
-      })
-      .select()
-      .single();
-
-    if (sessionError) {
-      throw sessionError;
-    }
-
-    await supabaseClient.from('activity_logs').insert({
-      session_id: session.id,
-      user_id: user.id,
-      action: 'session_started',
-      resource_type: 'lab_session',
-      resource_id: session.id,
-    });
-
-    return new Response(JSON.stringify({
-      sessionId: session.id,
-      credentials: {
-        accessKeyId: stsResponse.Credentials!.AccessKeyId,
-        secretAccessKey: stsResponse.Credentials!.SecretAccessKey,
-        sessionToken: stsResponse.Credentials!.SessionToken,
-        expiration: stsResponse.Credentials!.Expiration,
-      },
-      consoleUrl: `https://ap-south-1.console.aws.amazon.com/console/home?region=ap-south-1#`,
-    }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
-  } catch (error) {
-    return new Response(JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
+  } catch (err) {
+    console.error("start-lab error:", err);
+    return json({ error: String(err) }, 500);
   }
-});
+}

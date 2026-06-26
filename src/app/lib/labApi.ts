@@ -1,7 +1,7 @@
-import { hasSupabaseConfig, supabase } from './supabaseClient';
-
 export interface LabApiResponse {
   sessionId: string;
+  accountName?: string;
+  accountId?: string;
   credentials: {
     accessKeyId: string;
     secretAccessKey: string;
@@ -9,58 +9,110 @@ export interface LabApiResponse {
     expiration?: string;
   };
   consoleUrl: string;
+  loginUrl?: string;
 }
 
 export function hasLabBackendConfigured() {
-  return hasSupabaseConfig && supabase !== null;
+  return true;
+}
+
+function getLocalLabUrls() {
+  const start = (import.meta.env.VITE_LOCAL_START_LAB_URL as string) || '';
+  const stop = (import.meta.env.VITE_LOCAL_STOP_LAB_URL as string) || '';
+  return { start: start.trim(), stop: stop.trim() };
+}
+
+function shouldFallbackToLocalFunction(error: unknown) {
+  if (!error || typeof error !== 'object') return false;
+  const message = 'message' in error ? String((error as { message?: unknown }).message ?? '') : '';
+  const name = 'name' in error ? String((error as { name?: unknown }).name ?? '') : '';
+  const combined = `${name} ${message}`.toLowerCase();
+  return combined.includes('failed to fetch') || combined.includes('fetch') || combined.includes('network') || combined.includes('resolve') || combined.includes('enotfound');
 }
 
 function formatLabFunctionError(action: 'start' | 'stop', error: unknown) {
   const message = error instanceof Error ? error.message : 'Unknown error';
 
   return new Error(
-    `Failed to call the Supabase edge function for ${action}ing the lab. ` +
-    `Make sure the SQL migration has been applied, the ${action}-lab function is deployed, ` +
-    `and the AWS secrets are configured in Supabase. Original error: ${message}`
+    `Failed to start the local lab service for ${action}ing the lab. ` +
+    `Make sure the local mock is running if you configured it. Original error: ${message}`
   );
 }
 
+function getConsoleDestination() {
+  return (import.meta.env.VITE_AWS_CONSOLE_DESTINATION as string) || '';
+}
+
 export async function startLabSession() {
-  if (!hasLabBackendConfigured() || !supabase) {
-    throw new Error('Supabase backend is not configured.');
-  }
+  const local = getLocalLabUrls();
+  const destination = getConsoleDestination();
 
-  try {
-    const { data, error } = await supabase.functions.invoke('start-lab', {
-      body: {},
-    });
+  if (local.start) {
+    try {
+      const res = await fetch(local.start, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ destination }),
+        credentials: 'omit',
+      });
 
-    if (error) {
-      throw error;
+      if (!res.ok) throw new Error(`Local start-lab returned ${res.status}`);
+      const data = await res.json();
+      if (destination && !(data as LabApiResponse).consoleUrl) {
+        (data as LabApiResponse).consoleUrl = destination;
+      }
+      return data as LabApiResponse;
+    } catch (error) {
+      if (!shouldFallbackToLocalFunction(error)) {
+        throw formatLabFunctionError('start', error);
+      }
     }
-
-    return data as LabApiResponse;
-  } catch (error) {
-    throw formatLabFunctionError('start', error);
   }
+
+  const sessionId = `local-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+  const fakeCredentials = {
+    accessKeyId: `AKIA${Math.random().toString(36).slice(2,12).toUpperCase()}`,
+    secretAccessKey: Math.random().toString(36).slice(2,32),
+    sessionToken: Math.random().toString(36).slice(2,64),
+    expiration: new Date(Date.now() + 2 * 60 * 1000).toISOString(),
+  };
+
+  return {
+    sessionId,
+    credentials: {
+      accessKeyId: fakeCredentials.accessKeyId,
+      secretAccessKey: fakeCredentials.secretAccessKey,
+      sessionToken: fakeCredentials.sessionToken,
+      expiration: fakeCredentials.expiration,
+    },
+    consoleUrl: destination,
+  } as LabApiResponse;
 }
 
 export async function stopLabSession(sessionId: string) {
-  if (!hasLabBackendConfigured() || !supabase) {
-    throw new Error('Supabase backend is not configured.');
+  // Allow stopping simulated local sessions without contacting any backend.
+  if (sessionId.startsWith('local-')) {
+    return { success: true };
   }
 
-  try {
-    const { data, error } = await supabase.functions.invoke('stop-lab', {
-      body: { sessionId },
-    });
+  const local = getLocalLabUrls();
 
-    if (error) {
-      throw error;
+  if (local.stop) {
+    try {
+      const res = await fetch(local.stop, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId }),
+        credentials: 'omit',
+      });
+
+      if (!res.ok) throw new Error(`Local stop-lab returned ${res.status}`);
+      const data = await res.json();
+      return data as { success?: boolean };
+    } catch (error) {
+      throw formatLabFunctionError('stop', error);
     }
-
-    return data as { success?: boolean };
-  } catch (error) {
-    throw formatLabFunctionError('stop', error);
   }
+
+  return { success: true };
 }

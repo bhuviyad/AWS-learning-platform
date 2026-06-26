@@ -4,9 +4,8 @@ export interface AuthUser {
   password: string;
 }
 
-import { hasSupabaseConfig, supabase } from './lib/supabaseClient';
-
 const USERS_STORAGE_KEY = 'aws-learning-lab-users';
+const CURRENT_USER_STORAGE_KEY = 'aws-learning-lab-current-user';
 
 export interface AuthResult {
   success: boolean;
@@ -44,88 +43,74 @@ function writeStoredUsers(users: AuthUser[]) {
   window.localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(users));
 }
 
-export async function registerUser(name: string, email: string, password: string): Promise<AuthResult> {
-  const trimmedEmail = email.trim().toLowerCase();
-  const trimmedName = name.trim();
+export function readCurrentUser(): { name: string; email: string } | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
 
-  if (hasSupabaseConfig && supabase) {
-    const { data, error } = await supabase.auth.signUp({
-      email: trimmedEmail,
-      password,
-      options: {
-        data: {
-          full_name: trimmedName,
-          name: trimmedName,
-        },
-      },
-    });
+  const rawUser = window.localStorage.getItem(CURRENT_USER_STORAGE_KEY);
 
-    if (error) {
-      return { success: false, message: error.message };
-    }
+  if (!rawUser) {
+    return null;
+  }
 
-    if (!data.session) {
-      return {
-        success: true,
-        message: 'Account created. Check your email to confirm it before signing in.',
-      };
+  try {
+    const parsedUser = JSON.parse(rawUser) as { name?: unknown; email?: unknown };
+
+    if (typeof parsedUser.name !== 'string' || typeof parsedUser.email !== 'string') {
+      return null;
     }
 
     return {
-      success: true,
-      message: 'Account created. You can now sign in.',
+      name: parsedUser.name,
+      email: parsedUser.email,
     };
+  } catch {
+    return null;
+  }
+}
+
+export function writeCurrentUser(user: { name: string; email: string }) {
+  if (typeof window === 'undefined') {
+    return;
   }
 
+  window.localStorage.setItem(CURRENT_USER_STORAGE_KEY, JSON.stringify(user));
+}
+
+export function clearCurrentUser() {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  window.localStorage.removeItem(CURRENT_USER_STORAGE_KEY);
+}
+
+function createLocalAccount(name: string, email: string, password: string): AuthResult {
   const existingUsers = readStoredUsers();
 
-  if (existingUsers.some((user) => user.email.toLowerCase() === trimmedEmail)) {
+  if (existingUsers.some((user) => user.email.toLowerCase() === email)) {
     return {
       success: false,
       message: 'An account with this email already exists. Please sign in instead.',
     };
   }
 
-  const nextUsers = [...existingUsers, { name: trimmedName, email: trimmedEmail, password }];
+  const nextUsers = [...existingUsers, { name, email, password }];
   writeStoredUsers(nextUsers);
 
   return {
     success: true,
-    message: 'Account created. You can now sign in.',
+    message: 'Account created locally. You can now sign in.',
+    user: {
+      name,
+      email,
+    },
   };
 }
 
-export async function authenticateUser(email: string, password: string): Promise<AuthResult> {
-  const trimmedEmail = email.trim().toLowerCase();
-
-  if (hasSupabaseConfig && supabase) {
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email: trimmedEmail,
-      password,
-    });
-
-    if (error || !data.user) {
-      return {
-        success: false,
-        message: error?.message ?? 'Unable to sign in.',
-      };
-    }
-
-    return {
-      success: true,
-      message: 'Signed in successfully.',
-      user: {
-        name:
-          (data.user.user_metadata?.full_name as string | undefined) ||
-          (data.user.user_metadata?.name as string | undefined) ||
-          data.user.email ||
-          'User',
-        email: data.user.email ?? trimmedEmail,
-      },
-    };
-  }
-
-  const matchingUser = readStoredUsers().find((user) => user.email.toLowerCase() === trimmedEmail);
+function authenticateLocalUser(email: string, password: string): AuthResult {
+  const matchingUser = readStoredUsers().find((user) => user.email.toLowerCase() === email);
 
   if (!matchingUser) {
     return {
@@ -149,4 +134,29 @@ export async function authenticateUser(email: string, password: string): Promise
       email: matchingUser.email,
     },
   };
+}
+
+function shouldFallbackToLocalAuth(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+
+  const message = 'message' in error ? String((error as { message?: unknown }).message ?? '') : '';
+  const name = 'name' in error ? String((error as { name?: unknown }).name ?? '') : '';
+  const combined = `${name} ${message}`.toLowerCase();
+
+  return combined.includes('failed to fetch') || combined.includes('fetch') || combined.includes('network');
+}
+
+export async function registerUser(name: string, email: string, password: string): Promise<AuthResult> {
+  const trimmedEmail = email.trim().toLowerCase();
+  const trimmedName = name.trim();
+
+  return createLocalAccount(trimmedName, trimmedEmail, password);
+}
+
+export async function authenticateUser(email: string, password: string): Promise<AuthResult> {
+  const trimmedEmail = email.trim().toLowerCase();
+
+  return authenticateLocalUser(trimmedEmail, password);
 }

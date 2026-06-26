@@ -1,0 +1,196 @@
+================================================================
+AWS LEARNING PLATFORM — ACCESS SETUP PROPOSAL
+================================================================
+
+OVERVIEW
+--------
+We are building an internal learning platform where interns can
+watch AWS lessons and practice in a real AWS environment via
+temporary, scoped access. To enable this, the platform backend
+needs to generate short-lived AWS credentials on demand and log
+interns directly into the AWS Console — without exposing any
+permanent credentials.
+
+
+================================================================
+WHAT IS REQUIRED
+================================================================
+
+1. A Backend IAM User (learning-platform-backend)
+-------------------------------------------------
+A dedicated IAM user with programmatic access (Access Key ID +
+Secret Access Key) used exclusively by the platform backend to
+call AWS STS.
+
+Why:
+The platform needs a trusted identity to call AWS on behalf of
+interns. This user never logs into the console — it only makes
+one API call (sts:AssumeRole) to generate temporary intern
+credentials.
+
+
+2. The interns-sandbox-role Role ARN
+-------------------------------------
+The ARN (Amazon Resource Name) of the already-created
+interns-sandbox-role so the backend knows which role to assume
+for each intern session.
+
+Format: arn:aws:iam::ACCOUNT_ID:role/interns-sandbox-role
+
+Why:
+Without the ARN, the backend cannot target the correct role
+when requesting temporary credentials.
+
+
+3. Trust Policy Update on interns-sandbox-role
+-----------------------------------------------
+Add the learning-platform-backend IAM user as a trusted
+principal on the interns-sandbox-role, so it is allowed to
+assume that role.
+
+Why:
+AWS STS AssumeRole only works if the role explicitly trusts
+the caller. Without this, all credential generation requests
+will be denied with AccessDenied.
+
+
+4. Permission Policy on the Backend IAM User
+---------------------------------------------
+Attach a minimal policy to learning-platform-backend allowing
+only sts:AssumeRole on the interns-sandbox-role ARN — nothing
+else.
+
+Why:
+Least-privilege principle. The backend user should have no
+other AWS access beyond generating temporary intern credentials.
+
+
+================================================================
+HOW IT WORKS (FLOW)
+================================================================
+
+  Intern clicks "Start Lab" on the platform
+              |
+              v
+  Platform backend calls AWS STS: AssumeRole
+  (targets interns-sandbox-role)
+              |
+              v
+  AWS returns temporary credentials (expire in 1 hour)
+              |
+              v
+  Backend exchanges credentials for a federated login token
+              |
+              v
+  Intern is automatically logged into AWS Console
+  with sandbox permissions — no second login needed
+
+
+================================================================
+PROS
+================================================================
+
+  No permanent credentials exposed
+    Interns never see or handle long-lived keys. Only the
+    backend IAM user holds permanent keys, stored securely.
+
+  Auto-expiry
+    Temporary credentials expire in 1 hour automatically.
+    No manual revocation needed when a session ends.
+
+  Scoped access
+    Interns only get the permissions defined in
+    interns-sandbox-role — nothing more, nothing less.
+
+  Audit trail
+    Every session is automatically logged in AWS CloudTrail.
+    You can see exactly what each intern did and when.
+
+  Single sign-on experience
+    Interns click one button on the learning platform and
+    land directly in the AWS Console. No second login.
+
+  Isolated sessions
+    Each intern gets their own temporary session.
+    No credential sharing between interns.
+
+
+================================================================
+CONS / RISKS AND MITIGATIONS
+================================================================
+
+  Risk: Backend key compromise
+    If the learning-platform-backend access keys are leaked,
+    an attacker could generate intern-level credentials.
+  Mitigation:
+    Store keys in Supabase Vault (not in code or .env files).
+    Rotate keys every 90 days.
+
+  Risk: Over-permissioned sandbox role
+    If interns-sandbox-role has too broad permissions, interns
+    could accidentally create expensive or sensitive resources.
+  Mitigation:
+    Scope the role to only the AWS services needed for training
+    (e.g. EC2 t2.micro only, S3 with learninglab- prefix only).
+
+  Risk: Unexpected AWS costs from intern activity
+    Interns experimenting in AWS could spin up costly resources.
+  Mitigation:
+    Set an AWS Budget alert on the sandbox account to notify
+    if monthly spend exceeds a set threshold (e.g. $50).
+
+
+================================================================
+WHAT WE NEED FROM YOU
+================================================================
+
+  [ ] Role ARN of interns-sandbox-role
+      Format: arn:aws:iam::ACCOUNT_ID:role/interns-sandbox-role
+
+  [ ] AWS Account ID (12-digit number)
+
+  [ ] Create IAM user: learning-platform-backend
+      - Enable programmatic access (Access Key + Secret)
+      - Share the Access Key ID and Secret Access Key with us
+
+  [ ] Attach this policy to learning-platform-backend:
+
+      {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "sts:AssumeRole",
+            "Resource": "arn:aws:iam::ACCOUNT_ID:role/interns-sandbox-role"
+          }
+        ]
+      }
+
+  [ ] Update trust policy on interns-sandbox-role to allow
+      learning-platform-backend to assume it:
+
+      {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::ACCOUNT_ID:user/learning-platform-backend"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      }
+
+      (Replace ACCOUNT_ID with the actual 12-digit account ID)
+
+
+================================================================
+CONTACT
+================================================================
+
+Once the above is set up and the credentials are shared, the
+platform can be fully wired up and interns will have seamless
+one-click access to their AWS sandbox environment.
+
+================================================================

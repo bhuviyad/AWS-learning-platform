@@ -38,9 +38,6 @@ export default function SignupPage({ onSignup, onSwitchToLogin }: SignupPageProp
       setEmail('');
       setPassword('');
       setConfirmPassword('');
-      setTimeout(() => {
-        onSwitchToLogin();
-      }, 1200);
     } else {
       setErrorMessage(result.message);
     }

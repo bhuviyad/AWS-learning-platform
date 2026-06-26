@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Play, Square, ExternalLink, Clock, Server, Database, Shield, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
@@ -6,7 +6,7 @@ import { Alert, AlertDescription } from './ui/alert';
 import { Progress } from './ui/progress';
 import { hasLabBackendConfigured, startLabSession, stopLabSession } from '../lib/labApi';
 
-const LAB_SESSION_DURATION_MS = 2 * 60 * 1000;
+const LAB_SESSION_DURATION_MS = 15 * 60 * 1000;
 
 interface LabSession {
   id: string;
@@ -16,6 +16,7 @@ interface LabSession {
   accountName: string | null;
   accountId: string | null;
   awsConsoleUrl: string | null;
+  loginUrl: string | null;
   credentials: {
     accessKeyId: string;
     secretAccessKey: string;
@@ -24,6 +25,7 @@ interface LabSession {
 }
 
 export default function HandsOnLabPage() {
+  const autoStartAttempted = useRef(false);
   const [session, setSession] = useState<LabSession>({
     id: '',
     status: 'inactive',
@@ -37,6 +39,7 @@ export default function HandsOnLabPage() {
 
   const [timeRemaining, setTimeRemaining] = useState<number>(0);
   const [errorMessage, setErrorMessage] = useState<string>('');
+  const [lastConsoleUrl, setLastConsoleUrl] = useState<string | null>(null);
 
   // Timer countdown
   useEffect(() => {
@@ -55,13 +58,28 @@ export default function HandsOnLabPage() {
     return () => clearInterval(interval);
   }, [session]);
 
+  useEffect(() => {
+    if (autoStartAttempted.current) {
+      return;
+    }
+
+    if (session.status !== 'inactive') {
+      return;
+    }
+
+    autoStartAttempted.current = true;
+    void handleStartLab();
+  }, []);
+
   const handleStartLab = async () => {
     setErrorMessage('');
     setSession({ ...session, status: 'starting' });
 
-    if (hasLabBackendConfigured()) {
+      if (hasLabBackendConfigured()) {
       try {
         const response = await startLabSession();
+          console.log('[lab] startLabSession response:', response);
+          setLastConsoleUrl(response.loginUrl || response.consoleUrl || null);
         const startTime = Date.now();
         const endTime = startTime + LAB_SESSION_DURATION_MS;
 
@@ -70,9 +88,10 @@ export default function HandsOnLabPage() {
           status: 'active',
           startTime,
           endTime,
-          accountName: 'GDTC-AWS-COE',
-          accountId: '992848512293',
+          accountName: response.accountName || null,
+          accountId: response.accountId || null,
           awsConsoleUrl: response.consoleUrl,
+          loginUrl: (response as any).loginUrl || null,
           credentials: {
             accessKeyId: response.credentials.accessKeyId,
             secretAccessKey: response.credentials.secretAccessKey,
@@ -188,7 +207,7 @@ export default function HandsOnLabPage() {
         <Alert className="border-orange-200 bg-orange-50">
           <AlertCircle className="h-4 w-4 text-orange-600" />
           <AlertDescription className="text-orange-800">
-            Lab session started, but real AWS credentials are unavailable because the Supabase backend is not configured.
+            Lab session started, but real AWS credentials are unavailable in local demo mode.
           </AlertDescription>
         </Alert>
       )}
@@ -288,7 +307,15 @@ export default function HandsOnLabPage() {
           {session.status === 'active' && (
             <>
               <Button
-                onClick={() => window.open(session.awsConsoleUrl!, '_blank')}
+                onClick={() => {
+                  const login = session.loginUrl;
+                  const preferred = (import.meta.env.VITE_AWS_CONSOLE_DESTINATION as string) || session.awsConsoleUrl || '';
+                  if (login) {
+                    window.open(login, '_blank');
+                    return;
+                  }
+                  if (preferred) window.open(preferred, '_blank');
+                }}
                 size="lg"
                 className="bg-green-600 hover:bg-green-700"
               >
@@ -313,6 +340,12 @@ export default function HandsOnLabPage() {
             </Button>
           )}
         </div>
+
+        {lastConsoleUrl && (
+          <div className="text-center text-xs text-slate-500 mt-2">
+            Returned AWS URL: <a className="text-blue-600 underline break-all" href={lastConsoleUrl} target="_blank" rel="noreferrer">{lastConsoleUrl}</a>
+          </div>
+        )}
 
         {/* Permissions Info */}
         <div className="border-t border-slate-200 pt-6">
@@ -348,9 +381,11 @@ export default function HandsOnLabPage() {
             <Database className="w-5 h-5 text-orange-600" />
             Temporary AWS Credentials
           </h3>
-          <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
-            <span className="font-medium text-slate-900">AWS Account:</span> {session.accountName} ({session.accountId})
-          </div>
+          {(session.accountName || session.accountId) && (
+            <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+              <span className="font-medium text-slate-900">AWS Account:</span> {session.accountName || 'Unknown'}{session.accountId ? ` (${session.accountId})` : ''}
+            </div>
+          )}
           <div className="space-y-3">
             <div className="bg-slate-50 rounded-lg p-3">
               <p className="text-xs font-medium text-slate-600 mb-1">Access Key ID</p>
