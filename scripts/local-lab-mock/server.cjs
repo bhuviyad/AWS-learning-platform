@@ -56,11 +56,6 @@ async function assumeSandboxRole(sessionName) {
     RoleArn: AWS_LAB_ROLE_ARN,
     RoleSessionName: sessionName,
     DurationSeconds: 900,
-    // Tag the session so all resources created can be tracked and cleaned up
-    Tags: [
-      { Key: 'SessionId', Value: sessionName },
-      { Key: 'ManagedBy', Value: 'LearningPlatform' },
-    ],
   }));
 
   const creds = response.Credentials;
