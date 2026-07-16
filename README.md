@@ -157,150 +157,73 @@ Create and attach this policy to the role:
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "EC2BasicAccess",
+      "Sid": "LambdaSessionScoped",
       "Effect": "Allow",
       "Action": [
-        "ec2:RunInstances",
-        "ec2:TerminateInstances",
-        "ec2:DescribeInstances",
-        "ec2:DescribeInstanceStatus",
-        "ec2:StopInstances",
-        "ec2:StartInstances",
-        "ec2:DescribeImages",
-        "ec2:DescribeKeyPairs",
-        "ec2:DescribeSecurityGroups",
-        "ec2:CreateTags"
+        "lambda:CreateFunction",
+        "lambda:DeleteFunction",
+        "lambda:GetFunction",
+        "lambda:ListFunctions",
+        "lambda:ListTags",
+        "lambda:TagResource",
+        "lambda:UntagResource"
       ],
-      "Resource": "*",
+      "Resource": "arn:aws:lambda:REGION:ACCOUNT_ID:function:learninglab-*",
       "Condition": {
         "StringEquals": {
-          "ec2:ResourceTag/Environment": "LearningLab"
+          "aws:ResourceTag/Environment": "LearningLab",
+          "aws:ResourceTag/SessionId": "${aws:PrincipalTag/SessionId}"
         }
       }
     },
     {
-      "Sid": "S3BasicAccess",
+      "Sid": "LambdaCreateWithRequiredTags",
       "Effect": "Allow",
-      "Action": [
-        "s3:CreateBucket",
-        "s3:ListBucket",
-        "s3:PutObject",
-        "s3:GetObject",
-        "s3:DeleteObject",
-        "s3:DeleteBucket"
-      ],
-      "Resource": [
-        "arn:aws:s3:::learninglab-*",
-        "arn:aws:s3:::learninglab-*/*"
-      ]
+      "Action": "lambda:CreateFunction",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Environment": "LearningLab",
+          "aws:RequestTag/SessionId": "${aws:PrincipalTag/SessionId}"
+        },
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": ["Environment", "SessionId", "ExpirationTime"]
+        }
+      }
     },
     {
-      "Sid": "VPCReadOnly",
+      "Sid": "PassLambdaExecutionRole",
       "Effect": "Allow",
-      "Action": [
-        "ec2:DescribeVpcs",
-        "ec2:DescribeSubnets",
-        "ec2:DescribeRouteTables"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Sid": "CloudWatchReadOnly",
-      "Effect": "Allow",
-      "Action": [
-        "cloudwatch:GetMetricStatistics",
-        "cloudwatch:ListMetrics",
-        "logs:DescribeLogGroups",
-        "logs:DescribeLogStreams",
-        "logs:GetLogEvents"
-      ],
-      "Resource": "*"
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::ACCOUNT_ID:role/LearningLabLambdaExecutionRole",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "lambda.amazonaws.com"
+        }
+      }
     }
   ]
 }
 ```
 
-### 3. Create Lambda Function for Resource Cleanup
+You also need a Lambda execution role named `LearningLabLambdaExecutionRole` that trusts `lambda.amazonaws.com`.
 
-Deploy a Lambda function that runs periodically to clean up expired lab resources:
+The lab session is now tagged with `Environment`, `SessionId`, and `ExpirationTime`, and a cleanup job removes expired Lambda functions automatically.
 
-```javascript
-// Lambda function code (Node.js)
-const AWS = require('aws-sdk');
-const ec2 = new AWS.EC2();
-const s3 = new AWS.S3();
 
-exports.handler = async (event) => {
-    const expirationTag = 'LearningLabExpiration';
-    const now = Date.now();
-    
-    // Clean up EC2 instances
-    const instances = await ec2.describeInstances({
-        Filters: [
-            { Name: 'tag-key', Values: [expirationTag] },
-            { Name: 'instance-state-name', Values: ['running', 'stopped'] }
-        ]
-    }).promise();
-    
-    for (const reservation of instances.Reservations) {
-        for (const instance of reservation.Instances) {
-            const expirationTime = instance.Tags.find(t => t.Key === expirationTag)?.Value;
-            if (expirationTime && parseInt(expirationTime) < now) {
-                await ec2.terminateInstances({ InstanceIds: [instance.InstanceId] }).promise();
-                console.log(`Terminated instance: ${instance.InstanceId}`);
-            }
-        }
-    }
-    
-    // Clean up S3 buckets
-    const buckets = await s3.listBuckets().promise();
-    for (const bucket of buckets.Buckets) {
-        if (bucket.Name.startsWith('learninglab-')) {
-            const tags = await s3.getBucketTagging({ Bucket: bucket.Name }).promise().catch(() => null);
-            const expirationTime = tags?.TagSet.find(t => t.Key === expirationTag)?.Value;
-            
-            if (expirationTime && parseInt(expirationTime) < now) {
-                // Delete all objects first
-                const objects = await s3.listObjectsV2({ Bucket: bucket.Name }).promise();
-                if (objects.Contents.length > 0) {
-                    await s3.deleteObjects({
-                        Bucket: bucket.Name,
-                        Delete: {
-                            Objects: objects.Contents.map(obj => ({ Key: obj.Key }))
-                        }
-                    }).promise();
-                }
-                // Delete bucket
-                await s3.deleteBucket({ Bucket: bucket.Name }).promise();
-                console.log(`Deleted bucket: ${bucket.Name}`);
-            }
-        }
-    }
-    
-    return { statusCode: 200, body: 'Cleanup completed' };
-};
-```
+### 3. Automated Timeout Cleanup
 
-### 4. Set Up CloudWatch Event Rule
+The platform now uses a scheduled cleanup job to delete expired Lambda resources automatically. The job scans for `LearningLab`-tagged functions, checks their `ExpirationTime`, and deletes only the functions that belong to the matching session.
 
-Create a CloudWatch Event rule to trigger the cleanup Lambda every 5 minutes:
+If you want to run the same logic manually, use the new local test harness:
 
 ```bash
-aws events put-rule \
-  --name learning-lab-cleanup \
-  --schedule-expression "rate(5 minutes)"
-
-aws lambda add-permission \
-  --function-name LabResourceCleanup \
-  --statement-id learning-lab-cleanup \
-  --action lambda:InvokeFunction \
-  --principal events.amazonaws.com \
-  --source-arn arn:aws:events:REGION:ACCOUNT_ID:rule/learning-lab-cleanup
-
-aws events put-targets \
-  --rule learning-lab-cleanup \
-  --targets "Id"="1","Arn"="arn:aws:lambda:REGION:ACCOUNT_ID:function:LabResourceCleanup"
+node scripts/lambda-lifecycle-test.mjs
 ```
+
+### 4. Schedule the Cleanup Job
+
+Trigger the cleanup endpoint every few minutes with your scheduler of choice (Supabase scheduled job, EventBridge, cron, etc.) so expired lab resources are removed even if the user closes the tab.
 
 ## Supabase Setup
 
@@ -396,6 +319,8 @@ The platform uses Supabase Edge Functions for AWS integration. Key endpoints:
 
 ## Deployment
 
+See also: [`docs/DEPLOYMENT_MATRIX.md`](docs/DEPLOYMENT_MATRIX.md)
+
 ### Frontend Deployment (AWS Amplify)
 
 ```bash
@@ -422,11 +347,26 @@ npm install -g supabase
 supabase link --project-ref your-project-ref
 
 # Deploy edge functions
-supabase functions deploy
+supabase functions deploy start-lab
+supabase functions deploy stop-lab
+supabase functions deploy cleanup-expired-labs
 
 # Run migrations
 supabase db push
 ```
+
+### Cleanup Scheduler
+
+Run the cleanup every few minutes so expired lab resources are deleted even if the user closes the tab.
+
+If you are using Render as the scheduler runner, set `LAB_CLEANUP_URL` to the deployed cleanup endpoint and run:
+
+```bash
+node scripts/cleanup-expired-labs.mjs
+```
+
+If you want Supabase to own the scheduler instead, create a Supabase scheduled job for `cleanup-expired-labs`.
+
 
 ## Monitoring & Logging
 

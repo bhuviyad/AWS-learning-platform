@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "start-local-lab-mock": "node scripts/local-lab-mock/server.cjs",
+    "cleanup-expired-labs": "node scripts/cleanup-expired-labs.mjs",
     "build": "vite build",
     "dev": "vite"
   },

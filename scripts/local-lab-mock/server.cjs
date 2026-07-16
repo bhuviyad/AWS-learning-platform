@@ -3,8 +3,8 @@ const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 const { STSClient, AssumeRoleCommand } = require('@aws-sdk/client-sts');
-const { LambdaClient, ListFunctionsCommand, DeleteFunctionCommand } = require('@aws-sdk/client-lambda');
-const { S3Client, ListBucketsCommand, ListObjectsV2Command, DeleteObjectsCommand, DeleteObjectCommand, DeleteBucketCommand } = require('@aws-sdk/client-s3');
+const { LambdaClient } = require('@aws-sdk/client-lambda');
+const { cleanupTaggedLambdaFunctions } = require('../lambdaCleanup.cjs');
 
 const app = express();
 app.use(cors());
@@ -32,30 +32,66 @@ loadEnvFile(path.resolve(process.cwd(), '.env.local'));
 
 function makeFakeCredentials() {
   return {
-    accessKeyId: `ASIA${Math.random().toString(36).slice(2,12).toUpperCase()}`,
-    secretAccessKey: Math.random().toString(36).slice(2,40),
-    sessionToken: Math.random().toString(36).repeat(4).slice(0,200),
+    accessKeyId: `ASIA${Math.random().toString(36).slice(2, 12).toUpperCase()}`,
+    secretAccessKey: Math.random().toString(36).slice(2, 40),
+    sessionToken: Math.random().toString(36).repeat(4).slice(0, 200),
     expiration: new Date(Date.now() + 900 * 1000).toISOString(),
   };
 }
 
-async function assumeSandboxRole(sessionName) {
-  const { BACKEND_AWS_ACCESS_KEY_ID, BACKEND_AWS_SECRET_ACCESS_KEY, AWS_LAB_ROLE_ARN } = process.env;
+function getBackendCredentials() {
+  const accessKeyId = process.env.BACKEND_AWS_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID || process.env.AWS_LAB_USER_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.BACKEND_AWS_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY || process.env.AWS_LAB_USER_SECRET_ACCESS_KEY;
+  const sessionToken = process.env.BACKEND_AWS_SESSION_TOKEN || process.env.AWS_SESSION_TOKEN || process.env.AWS_LAB_USER_SESSION_TOKEN;
+  const region = process.env.AWS_REGION || 'ap-south-1';
 
-  if (!BACKEND_AWS_ACCESS_KEY_ID || !BACKEND_AWS_SECRET_ACCESS_KEY || !AWS_LAB_ROLE_ARN) {
+  if (!accessKeyId || !secretAccessKey) {
+    return null;
+  }
+
+  return { accessKeyId, secretAccessKey, sessionToken, region };
+}
+
+function createLambdaClientFromBackend() {
+  const backend = getBackendCredentials();
+  if (!backend) return null;
+
+  return new LambdaClient({
+    region: backend.region,
+    credentials: {
+      accessKeyId: backend.accessKeyId,
+      secretAccessKey: backend.secretAccessKey,
+      ...(backend.sessionToken ? { sessionToken: backend.sessionToken } : {}),
+    },
+  });
+}
+
+async function assumeSandboxRole(sessionId) {
+  const backend = getBackendCredentials();
+  if (!backend || !process.env.AWS_LAB_ROLE_ARN) {
     console.warn('[lab] Missing backend credentials — using fake credentials');
     return makeFakeCredentials();
   }
 
   const sts = new STSClient({
-    region: 'ap-south-1',
-    credentials: { accessKeyId: BACKEND_AWS_ACCESS_KEY_ID, secretAccessKey: BACKEND_AWS_SECRET_ACCESS_KEY },
+    region: backend.region,
+    credentials: {
+      accessKeyId: backend.accessKeyId,
+      secretAccessKey: backend.secretAccessKey,
+      ...(backend.sessionToken ? { sessionToken: backend.sessionToken } : {}),
+    },
   });
 
+  const expiration = Date.now() + 900 * 1000;
   const response = await sts.send(new AssumeRoleCommand({
-    RoleArn: AWS_LAB_ROLE_ARN,
-    RoleSessionName: sessionName,
+    RoleArn: process.env.AWS_LAB_ROLE_ARN,
+    RoleSessionName: `lab-${sessionId.slice(0, 8)}`,
     DurationSeconds: 900,
+    Tags: [
+      { Key: 'Environment', Value: 'LearningLab' },
+      { Key: 'SessionId', Value: sessionId },
+      { Key: 'ExpirationTime', Value: String(expiration) },
+    ],
   }));
 
   const creds = response.Credentials;
@@ -63,7 +99,7 @@ async function assumeSandboxRole(sessionName) {
     accessKeyId: creds.AccessKeyId,
     secretAccessKey: creds.SecretAccessKey,
     sessionToken: creds.SessionToken,
-    expiration: creds.Expiration ? creds.Expiration.toISOString() : new Date(Date.now() + 900 * 1000).toISOString(),
+    expiration: creds.Expiration ? creds.Expiration.toISOString() : new Date(expiration).toISOString(),
   };
 }
 
@@ -85,79 +121,26 @@ async function buildLoginUrl(credentials, destination) {
   return `https://signin.aws.amazon.com/federation?Action=login&Issuer=LearningLabPlatform&Destination=${encodeURIComponent(destination)}&SigninToken=${encodeURIComponent(signinToken)}`;
 }
 
-// Destroy ALL resources in the sandbox account — no tag filtering
-async function cleanupSessionResources(sessionId) {
-  const { BACKEND_AWS_ACCESS_KEY_ID, BACKEND_AWS_SECRET_ACCESS_KEY } = process.env;
-  if (!BACKEND_AWS_ACCESS_KEY_ID || !BACKEND_AWS_SECRET_ACCESS_KEY) return;
-
-  const clientConfig = {
-    region: 'ap-south-1',
-    credentials: { accessKeyId: BACKEND_AWS_ACCESS_KEY_ID, secretAccessKey: BACKEND_AWS_SECRET_ACCESS_KEY },
-  };
-
-  const results = { lambda: 0, s3Buckets: 0, errors: [] };
-
-  // Delete ALL Lambda functions
-  try {
-    const lambda = new LambdaClient(clientConfig);
-    let marker;
-    do {
-      const { Functions = [], NextMarker } = await lambda.send(new ListFunctionsCommand({ Marker: marker }));
-      marker = NextMarker;
-      for (const fn of Functions) {
-        try {
-          await lambda.send(new DeleteFunctionCommand({ FunctionName: fn.FunctionName }));
-          results.lambda++;
-          console.log(`[cleanup] Deleted Lambda: ${fn.FunctionName}`);
-        } catch (e) {
-          results.errors.push(`Lambda ${fn.FunctionName}: ${e.message}`);
-        }
-      }
-    } while (marker);
-  } catch (e) {
-    results.errors.push(`Lambda list: ${e.message}`);
+async function cleanupSessionResources(sessionId, mode = 'manual') {
+  const client = createLambdaClientFromBackend();
+  if (!client) {
+    return { inspected: 0, deleted: 0, skipped: 0, errors: ['Backend AWS credentials are not configured'] };
   }
 
-  // Delete ALL S3 buckets (empty each one first)
-  try {
-    const s3 = new S3Client(clientConfig);
-    const { Buckets = [] } = await s3.send(new ListBucketsCommand({}));
+  return cleanupTaggedLambdaFunctions(client, { sessionId, mode });
+}
 
-    for (const bucket of Buckets) {
-      try {
-        // Drain all object versions + delete markers (works for versioned buckets too)
-        let continuationToken;
-        do {
-          const { Contents = [], NextContinuationToken } = await s3.send(
-            new ListObjectsV2Command({ Bucket: bucket.Name, ContinuationToken: continuationToken })
-          );
-          continuationToken = NextContinuationToken;
-          if (Contents.length > 0) {
-            await s3.send(new DeleteObjectsCommand({
-              Bucket: bucket.Name,
-              Delete: { Objects: Contents.map(o => ({ Key: o.Key })) },
-            }));
-          }
-        } while (continuationToken);
-
-        await s3.send(new DeleteBucketCommand({ Bucket: bucket.Name }));
-        results.s3Buckets++;
-        console.log(`[cleanup] Deleted S3 bucket: ${bucket.Name}`);
-      } catch (e) {
-        results.errors.push(`S3 ${bucket.Name}: ${e.message}`);
-      }
-    }
-  } catch (e) {
-    results.errors.push(`S3 list: ${e.message}`);
+async function cleanupExpiredResources() {
+  const client = createLambdaClientFromBackend();
+  if (!client) {
+    return { inspected: 0, deleted: 0, skipped: 0, errors: ['Backend AWS credentials are not configured'] };
   }
 
-  console.log(`[cleanup] Session ${sessionId} done — Lambda: ${results.lambda}, S3: ${results.s3Buckets}`);
-  if (results.errors.length) console.warn('[cleanup] Errors:', results.errors);
-  return results;
+  return cleanupTaggedLambdaFunctions(client, { mode: 'scheduled' });
 }
 
 app.post('/start-lab', async (req, res) => {
-  const sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+  const sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const destination = (req.body && req.body.destination) || process.env.VITE_AWS_CONSOLE_DESTINATION || '';
   const accountId = process.env.LAB_ACCOUNT_ID || '';
   const accountName = process.env.LAB_ACCOUNT_NAME || '';
@@ -191,12 +174,31 @@ app.post('/start-lab', async (req, res) => {
 
 app.post('/stop-lab', async (req, res) => {
   const { sessionId } = req.body || {};
-  console.log('[lab] stop-lab — nuking all sandbox resources (session:', sessionId, ')');
+  const cleanedSessionId = String(sessionId || '').trim();
 
-  // Fire cleanup in background — don't block the response
-  cleanupSessionResources(sessionId).catch(e => console.error('[cleanup] failed ->', e.message));
+  if (!cleanedSessionId) {
+    return res.status(400).json({ error: 'sessionId is required' });
+  }
 
-  res.json({ success: true });
+  console.log('[lab] stop-lab cleanup ->', cleanedSessionId);
+
+  try {
+    const cleanup = await cleanupSessionResources(cleanedSessionId, 'manual');
+    res.json({ success: true, sessionId: cleanedSessionId, cleanup });
+  } catch (error) {
+    console.error('[cleanup] failed ->', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/cleanup-expired-labs', async (_req, res) => {
+  try {
+    const cleanup = await cleanupExpiredResources();
+    res.json({ success: true, cleanup });
+  } catch (error) {
+    console.error('[cleanup] failed ->', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 const port = process.env.PORT || 8787;

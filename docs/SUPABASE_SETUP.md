@@ -396,17 +396,25 @@ serve(async (req) => {
 
 ### Deploy Edge Functions
 
+`start-lab` now tags each session with `Environment`, `SessionId`, and `ExpirationTime`, and the new `cleanup-expired-labs` function removes expired Lambda resources automatically.
+
 ```bash
 # Set environment variables (secrets)
 supabase secrets set AWS_REGION=us-east-1
 supabase secrets set AWS_ACCESS_KEY_ID=your_access_key
 supabase secrets set AWS_SECRET_ACCESS_KEY=your_secret_key
 supabase secrets set AWS_LAB_ROLE_ARN=arn:aws:iam::ACCOUNT:role/LabEnvironmentRole
+supabase secrets set AWS_LAMBDA_EXECUTION_ROLE_ARN=arn:aws:iam::ACCOUNT:role/LearningLabLambdaExecutionRole
 
 # Deploy functions
 supabase functions deploy start-lab
 supabase functions deploy stop-lab
+supabase functions deploy cleanup-expired-labs
 ```
+
+Schedule `cleanup-expired-labs` with Supabase scheduled jobs, EventBridge, or cron so expired lab resources are removed even if the user closes the browser tab.
+
+If you keep the existing database tables, the `lab_sessions.end_time` field can also be used for reporting and auditing.
 
 ## Step 5: Configure Storage (Optional)
 

@@ -1,99 +1,131 @@
 const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
 }
 
 function extractXml(xml: string, tag: string): string {
   const match = xml.match(new RegExp(`<${tag}[^>]*>(.*?)<\/${tag}>`));
-  return match ? match[1] : "";
+  return match ? match[1] : '';
 }
 
 const enc = new TextEncoder();
 
 async function hmac(key: ArrayBuffer, msg: string): Promise<ArrayBuffer> {
-  const k = await crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  return crypto.subtle.sign("HMAC", k, enc.encode(msg));
+  const k = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return crypto.subtle.sign('HMAC', k, enc.encode(msg));
 }
 
 async function hash(msg: string): Promise<string> {
-  const buf = await crypto.subtle.digest("SHA-256", enc.encode(msg));
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+  const buf = await crypto.subtle.digest('SHA-256', enc.encode(msg));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-function toHex(buf: ArrayBuffer): string {
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
-}
-
-async function stsAssumeRole(accessKeyId: string, secretAccessKey: string, roleArn: string, sessionName: string) {
-  const body = new URLSearchParams({
-    Action: "AssumeRole",
+function buildAssumeRoleBody(roleArn: string, sessionId: string, expirationTime: number) {
+  const params = new URLSearchParams({
+    Action: 'AssumeRole',
     RoleArn: roleArn,
-    RoleSessionName: sessionName,
-    DurationSeconds: "900",
-    Version: "2011-06-15",
-  }).toString();
+    RoleSessionName: `lab-${sessionId.slice(0, 8)}`,
+    DurationSeconds: '900',
+    Version: '2011-06-15',
+  });
 
+  params.set('Tags.member.1.Key', 'Environment');
+  params.set('Tags.member.1.Value', 'LearningLab');
+  params.set('Tags.member.2.Key', 'SessionId');
+  params.set('Tags.member.2.Value', sessionId);
+  params.set('Tags.member.3.Key', 'ExpirationTime');
+  params.set('Tags.member.3.Value', String(expirationTime));
+
+  return params.toString();
+}
+
+async function stsAssumeRole(accessKeyId: string, secretAccessKey: string, roleArn: string, sessionId: string, expirationTime: number) {
+  const body = buildAssumeRoleBody(roleArn, sessionId, expirationTime);
   const now = new Date();
-  const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, "").slice(0, 15) + "Z";
+  const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, '').slice(0, 15) + 'Z';
   const dateStamp = amzDate.slice(0, 8);
   const bodyHash = await hash(body);
   const canonicalHeaders = `content-type:application/x-www-form-urlencoded\nhost:sts.amazonaws.com\nx-amz-date:${amzDate}\n`;
-  const signedHeaders = "content-type;host;x-amz-date";
-  const canonicalRequest = ["POST", "/", "", canonicalHeaders, signedHeaders, bodyHash].join("\n");
+  const signedHeaders = 'content-type;host;x-amz-date';
+  const canonicalRequest = ['POST', '/', '', canonicalHeaders, signedHeaders, bodyHash].join('\n');
   const credentialScope = `${dateStamp}/us-east-1/sts/aws4_request`;
-  const stringToSign = ["AWS4-HMAC-SHA256", amzDate, credentialScope, await hash(canonicalRequest)].join("\n");
+  const stringToSign = ['AWS4-HMAC-SHA256', amzDate, credentialScope, await hash(canonicalRequest)].join('\n');
 
   let signingKey: ArrayBuffer = enc.encode(`AWS4${secretAccessKey}`).buffer as ArrayBuffer;
   signingKey = await hmac(signingKey, dateStamp);
-  signingKey = await hmac(signingKey, "us-east-1");
-  signingKey = await hmac(signingKey, "sts");
-  signingKey = await hmac(signingKey, "aws4_request");
+  signingKey = await hmac(signingKey, 'us-east-1');
+  signingKey = await hmac(signingKey, 'sts');
+  signingKey = await hmac(signingKey, 'aws4_request');
 
-  const signature = toHex(await hmac(signingKey, stringToSign));
+  const signature = Array.from(new Uint8Array(await hmac(signingKey, stringToSign))).map((b) => b.toString(16).padStart(2, '0')).join('');
   const authHeader = `AWS4-HMAC-SHA256 Credential=${accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
 
-  const res = await fetch("https://sts.amazonaws.com/", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded", "x-amz-date": amzDate, "Authorization": authHeader },
+  const res = await fetch('https://sts.amazonaws.com/', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'x-amz-date': amzDate,
+      Authorization: authHeader,
+    },
     body,
   });
 
   const xml = await res.text();
-  if (!res.ok) throw new Error(`STS error: ${extractXml(xml, "Message") || xml}`);
+  if (!res.ok) {
+    throw new Error(`STS error: ${extractXml(xml, 'Message') || xml}`);
+  }
 
   return {
-    accessKeyId: extractXml(xml, "AccessKeyId"),
-    secretAccessKey: extractXml(xml, "SecretAccessKey"),
-    sessionToken: extractXml(xml, "SessionToken"),
-    expiration: extractXml(xml, "Expiration"),
+    accessKeyId: extractXml(xml, 'AccessKeyId'),
+    secretAccessKey: extractXml(xml, 'SecretAccessKey'),
+    sessionToken: extractXml(xml, 'SessionToken'),
+    expiration: extractXml(xml, 'Expiration'),
   };
 }
 
+async function fetchFederationLoginUrl(credentials: { accessKeyId: string; secretAccessKey: string; sessionToken: string }, destination: string) {
+  const sessionJSON = JSON.stringify({
+    sessionId: credentials.accessKeyId,
+    sessionKey: credentials.secretAccessKey,
+    sessionToken: credentials.sessionToken,
+  });
+
+  const tokenRes = await fetch(`https://signin.aws.amazon.com/federation?Action=getSigninToken&Session=${encodeURIComponent(sessionJSON)}`);
+  if (!tokenRes.ok) return null;
+
+  const tokenData = await tokenRes.json();
+  const signinToken = tokenData?.SigninToken;
+  if (!signinToken) return null;
+
+  return `https://signin.aws.amazon.com/federation?Action=login&Issuer=LearningLabPlatform&Destination=${encodeURIComponent(destination)}&SigninToken=${encodeURIComponent(signinToken)}`;
+}
+
 export default async function (req: Request) {
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders });
   }
 
   try {
     const body = await req.json().catch(() => ({} as Record<string, string>));
-    const destination = body?.destination || Deno.env.get("VITE_AWS_CONSOLE_DESTINATION") || "https://console.aws.amazon.com/console/home";
-    const accessKeyId = Deno.env.get("BACKEND_AWS_ACCESS_KEY_ID");
-    const secretAccessKey = Deno.env.get("BACKEND_AWS_SECRET_ACCESS_KEY");
-    const roleArn = Deno.env.get("AWS_LAB_ROLE_ARN");
+    const destination = body?.destination || Deno.env.get('VITE_AWS_CONSOLE_DESTINATION') || 'https://console.aws.amazon.com/console/home';
+    const accessKeyId = Deno.env.get('BACKEND_AWS_ACCESS_KEY_ID') || Deno.env.get('AWS_ACCESS_KEY_ID') || Deno.env.get('AWS_LAB_USER_ACCESS_KEY_ID');
+    const secretAccessKey = Deno.env.get('BACKEND_AWS_SECRET_ACCESS_KEY') || Deno.env.get('AWS_SECRET_ACCESS_KEY') || Deno.env.get('AWS_LAB_USER_SECRET_ACCESS_KEY');
+    const roleArn = Deno.env.get('AWS_LAB_ROLE_ARN');
 
     if (!accessKeyId || !secretAccessKey || !roleArn) {
-      return json({ error: "Backend AWS credentials not configured" }, 500);
+      return json({ error: 'Backend AWS credentials not configured' }, 500);
     }
 
-    const sessionName = `intern-${Date.now()}`;
-    const credentials = await stsAssumeRole(accessKeyId, secretAccessKey, roleArn, sessionName);
+    const sessionId = crypto.randomUUID();
+    const expirationTime = Date.now() + 15 * 60 * 1000;
+    const credentials = await stsAssumeRole(accessKeyId, secretAccessKey, roleArn, sessionId, expirationTime);
 
     const sessionJSON = JSON.stringify({ sessionId: credentials.accessKeyId, sessionKey: credentials.secretAccessKey, sessionToken: credentials.sessionToken });
     const tokenRes = await fetch(`https://signin.aws.amazon.com/federation?Action=getSigninToken&Session=${encodeURIComponent(sessionJSON)}`);
@@ -104,15 +136,16 @@ export default async function (req: Request) {
       : null;
 
     return json({
-      sessionId: sessionName,
+      sessionId,
       credentials,
       consoleUrl: destination,
-      accountId: Deno.env.get("LAB_ACCOUNT_ID") || "",
-      accountName: Deno.env.get("LAB_ACCOUNT_NAME") || "",
+      accountId: Deno.env.get('LAB_ACCOUNT_ID') || '',
+      accountName: Deno.env.get('LAB_ACCOUNT_NAME') || '',
+      expiresAt: new Date(expirationTime).toISOString(),
       ...(loginUrl ? { loginUrl } : {}),
     });
   } catch (err) {
-    console.error("start-lab error:", err);
+    console.error('start-lab error:', err);
     return json({ error: String(err) }, 500);
   }
 }

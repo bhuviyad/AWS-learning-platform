@@ -18,38 +18,18 @@ export default async function (req: Request) {
   }
 
   try {
-    const body = await req.json().catch(() => ({} as Record<string, unknown>));
-    const sessionId = String(body?.sessionId ?? '').trim();
-
-    if (!sessionId) {
-      return json({ error: 'sessionId is required' }, 400);
-    }
-
-    let client;
-    try {
-      client = createLambdaCleanupClient();
-    } catch (error) {
-      return json({
-        success: true,
-        skipped: true,
-        sessionId,
-        reason: error instanceof Error ? error.message : String(error),
-      });
-    }
-
+    const client = createLambdaCleanupClient();
     const cleanup = await cleanupLabLambdaFunctions({
       client,
-      sessionId,
-      mode: 'manual',
+      mode: 'scheduled',
     });
 
     return json({
       success: true,
-      sessionId,
       cleanup,
     });
   } catch (err) {
-    console.error('stop-lab error:', err);
+    console.error('cleanup-expired-labs error:', err);
     return json({ error: String(err) }, 500);
   }
 }

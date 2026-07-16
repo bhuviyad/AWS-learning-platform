@@ -157,7 +157,12 @@ export default function HandsOnLabPage() {
   };
 
   const handleExpireSession = () => {
+    const sessionId = session.id;
     setSession({ ...session, status: 'expired' });
+    // Call stop-lab to trigger real AWS resource cleanup
+    if (sessionId) {
+      stopLabSession(sessionId).catch(() => {});
+    }
     setTimeout(() => {
       setSession({
         id: '',
@@ -243,7 +248,7 @@ export default function HandsOnLabPage() {
             </Badge>
           )}
           {session.status === 'starting' && (
-            <Badge className="bg-blue-100 text-blue-700 hover:bg-blue-100">
+            <Badge className="bg-blue-100 text-orange-600 hover:bg-blue-100">
               <Clock className="w-3 h-3 mr-1 animate-spin" />
               Starting...
             </Badge>
@@ -412,7 +417,7 @@ export default function HandsOnLabPage() {
       {/* Resource Cleanup Info */}
       <div className="bg-blue-50 border border-blue-200 rounded-xl p-6">
         <h3 className="font-semibold text-blue-900 mb-2">Automatic Resource Cleanup</h3>
-        <p className="text-sm text-blue-800">
+        <p className="text-sm text-orange-800">
           When your session expires or you stop the lab, all AWS resources (EC2 instances, S3 buckets, etc.)
           will be automatically deleted within 5 minutes. This ensures no unexpected charges and maintains
           a clean environment for the next session.
