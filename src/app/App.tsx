@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { Book, FlaskConical } from 'lucide-react';
+import { Book, FlaskConical, Users } from 'lucide-react';
 import LearningPage from './components/LearningPage';
 import HandsOnLabPage from './components/HandsOnLabPage';
+import InternsPage from './components/InternsPage';
 import LoginPage from './components/LoginPage';
 import SignupPage from './components/SignupPage';
 import { Avatar, AvatarFallback } from './components/ui/avatar';
@@ -9,8 +10,8 @@ import { readCurrentUser, writeCurrentUser, clearCurrentUser, registerUser, auth
 
 export default function App() {
   const stored = readCurrentUser();
-  const [currentUser, setCurrentUser] = useState<{ name: string; email: string } | null>(stored);
-  const [currentPage, setCurrentPage] = useState<'learning' | 'lab'>('learning');
+  const [currentUser, setCurrentUser] = useState<{ id: string; name: string; email: string } | null>(stored);
+  const [currentPage, setCurrentPage] = useState<'learning' | 'lab' | 'interns'>('learning');
   const [authView, setAuthView] = useState<'login' | 'signup'>('login');
 
   const handleLogin = async (email: string, password: string) => {
@@ -108,6 +109,17 @@ export default function App() {
               <FlaskConical className="w-4 h-4" />
               <span className="font-medium">Hands-on Lab</span>
             </button>
+            <button
+              onClick={() => setCurrentPage('interns')}
+              className={`px-4 py-3 flex items-center gap-2 border-b-2 transition-colors ${
+                currentPage === 'interns'
+                  ? 'border-orange-500 text-orange-600'
+                  : 'border-transparent text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Users className="w-4 h-4" />
+              <span className="font-medium">Interns</span>
+            </button>
           </div>
         </div>
       </nav>
@@ -115,7 +127,13 @@ export default function App() {
       {/* Main Content */}
       <main className="flex-1 overflow-auto">
         <div className="max-w-7xl mx-auto p-6">
-          {currentPage === 'learning' ? <LearningPage /> : <HandsOnLabPage />}
+          {currentPage === 'learning' ? (
+            <LearningPage />
+          ) : currentPage === 'lab' ? (
+            <HandsOnLabPage currentUser={currentUser} />
+          ) : (
+            <InternsPage currentUser={currentUser} />
+          )}
         </div>
       </main>
     </div>

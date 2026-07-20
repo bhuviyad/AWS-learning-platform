@@ -24,6 +24,17 @@ Complete guide for setting up Supabase backend for the AWS Learning Lab Platform
 
 ### Run Migration SQL
 
+The project now includes a migration for the shared-account, per-intern identity model:
+
+- `supabase/migrations/004_per_intern_identity_center.sql`
+
+It adds:
+- `intern_profiles` for mapping app users to AWS identities
+- extended `lab_sessions` fields for identity/session tracking
+- `lab_resources` for tracking AWS resources created during a session
+
+You can apply it with `supabase db push` or paste the SQL into the editor if you prefer manual setup.
+
 Go to SQL Editor in Supabase Dashboard and run:
 
 ```sql

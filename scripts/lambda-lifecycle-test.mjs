@@ -1,6 +1,7 @@
 import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
+import readline from 'readline';
 import { STSClient, AssumeRoleCommand } from '@aws-sdk/client-sts';
 import { CreateFunctionCommand, DeleteFunctionCommand, GetFunctionCommand, LambdaClient, ListTagsCommand } from '@aws-sdk/client-lambda';
 
@@ -142,11 +143,17 @@ async function assumeTaggedSession({ sessionId, expirationTime }) {
   };
 }
 
+async function waitForEnter(message) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  await new Promise((resolve) => rl.question(`${message}\n`, () => { rl.close(); resolve(); }));
+}
+
 async function main() {
   const sessionId = `test-${crypto.randomUUID()}`;
   const expirationTime = Date.now() + 3 * 60 * 1000;
   const executionRoleArn = env('AWS_LAMBDA_EXECUTION_ROLE_ARN', 'arn:aws:iam::483591406604:role/interns-lambda-execution-role');
   const backendRoleArn = env('AWS_LAB_ROLE_ARN', 'arn:aws:iam::483591406604:role/interns-sandbox-role');
+  const pauseBeforeCleanup = process.argv.includes('--pause') || process.argv.includes('--hold');
   if (!process.env.AWS_LAB_ROLE_ARN) {
     process.env.AWS_LAB_ROLE_ARN = backendRoleArn;
   }
@@ -197,6 +204,11 @@ async function main() {
 
   const tags = await lambda.send(new ListTagsCommand({ Resource: functionArn }));
   console.log('[test] tags after create:', JSON.stringify(tags.Tags || {}, null, 2));
+
+  if (pauseBeforeCleanup) {
+    console.log(`[test] pause mode enabled. Inspect the Lambda in AWS now: ${functionName}`);
+    await waitForEnter('[test] Press Enter to continue to cleanup...');
+  }
 
   console.log('[test] simulating timeout cleanup using the shared cleanup helper');
   const cleanup = await cleanupTaggedLambdaFunctions(lambda, {

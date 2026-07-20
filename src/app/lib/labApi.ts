@@ -2,6 +2,16 @@ export interface LabApiResponse {
   sessionId: string;
   accountName?: string;
   accountId?: string;
+  userId?: string;
+  userEmail?: string;
+  userName?: string;
+  awsIdentityCenterUsername?: string;
+  awsIdentityCenterEmail?: string;
+  permissionSetName?: string;
+  awsAccountId?: string;
+  lambdaExecutionRoleArn?: string;
+  internProfile?: unknown;
+  expiresAt?: string;
   credentials: {
     accessKeyId: string;
     secretAccessKey: string;
@@ -10,6 +20,28 @@ export interface LabApiResponse {
   };
   consoleUrl: string;
   loginUrl?: string;
+}
+
+export interface LabIdentityContext {
+  id: string;
+  name: string;
+  email: string;
+  awsIdentityCenterUsername?: string;
+  awsIdentityCenterEmail?: string;
+  permissionSetName?: string;
+  awsAccountId?: string;
+}
+
+function toIdentityPayload(identity?: LabIdentityContext) {
+  return {
+    userId: identity?.id,
+    userEmail: identity?.email,
+    userName: identity?.name,
+    awsIdentityCenterUsername: identity?.awsIdentityCenterUsername,
+    awsIdentityCenterEmail: identity?.awsIdentityCenterEmail,
+    permissionSetName: identity?.permissionSetName,
+    awsAccountId: identity?.awsAccountId,
+  };
 }
 
 export function hasLabBackendConfigured() {
@@ -43,7 +75,11 @@ function getConsoleDestination() {
   return (import.meta.env.VITE_AWS_CONSOLE_DESTINATION as string) || '';
 }
 
-export async function startLabSession() {
+function getLambdaExecutionRoleArn() {
+  return (import.meta.env.VITE_AWS_LAMBDA_EXECUTION_ROLE_ARN as string) || '';
+}
+
+export async function startLabSession(identity?: LabIdentityContext) {
   const local = getLocalLabUrls();
   const destination = getConsoleDestination();
 
@@ -52,7 +88,7 @@ export async function startLabSession() {
       const res = await fetch(local.start, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ destination }),
+        body: JSON.stringify({ destination, ...toIdentityPayload(identity) }),
         credentials: 'omit',
       });
 
@@ -69,16 +105,17 @@ export async function startLabSession() {
     }
   }
 
-  const sessionId = `local-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+  const sessionId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const fakeCredentials = {
-    accessKeyId: `AKIA${Math.random().toString(36).slice(2,12).toUpperCase()}`,
-    secretAccessKey: Math.random().toString(36).slice(2,32),
-    sessionToken: Math.random().toString(36).slice(2,64),
+    accessKeyId: `AKIA${Math.random().toString(36).slice(2, 12).toUpperCase()}`,
+    secretAccessKey: Math.random().toString(36).slice(2, 32),
+    sessionToken: Math.random().toString(36).slice(2, 64),
     expiration: new Date(Date.now() + 2 * 60 * 1000).toISOString(),
   };
 
   return {
     sessionId,
+    ...toIdentityPayload(identity),
     credentials: {
       accessKeyId: fakeCredentials.accessKeyId,
       secretAccessKey: fakeCredentials.secretAccessKey,
@@ -86,11 +123,11 @@ export async function startLabSession() {
       expiration: fakeCredentials.expiration,
     },
     consoleUrl: destination,
+    lambdaExecutionRoleArn: getLambdaExecutionRoleArn() || undefined,
   } as LabApiResponse;
 }
 
 export async function stopLabSession(sessionId: string) {
-  // Allow stopping simulated local sessions without contacting any backend.
   if (sessionId.startsWith('local-')) {
     return { success: true };
   }

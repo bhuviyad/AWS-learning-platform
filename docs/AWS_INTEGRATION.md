@@ -1,6 +1,6 @@
 # AWS Integration Guide
 
-This guide describes the Lambda-based lab flow used by the Learning Lab Platform.
+This guide describes the shared-account Lambda lab flow used by the Learning Lab Platform.
 
 ## Overview
 
@@ -9,8 +9,18 @@ This guide describes the Lambda-based lab flow used by the Learning Lab Platform
    - `Environment=LearningLab`
    - `SessionId=<uuid>`
    - `ExpirationTime=<unix-ms>`
-3. The intern session can create a tagged Lambda function.
-4. A scheduled cleanup endpoint deletes only expired, lab-tagged Lambda resources.
+3. The intern session can create a Lambda function using the pre-approved execution role.
+4. The cleanup endpoint deletes only the Lambda resources that belong to that session or are expired.
+
+### Shared-account + per-intern identity model
+- One AWS sandbox account is shared by all interns.
+- Each intern gets a distinct identity profile in Supabase.
+- Sessions are tagged with `SessionId`, `UserId`, and `ExpirationTime`.
+- Cleanup only deletes resources that match the active or expired session tags.
+- Interns do not create IAM roles; they use the shared Lambda execution role provided by the platform.
+- The platform applies the session tags automatically so interns do not have to manage tagging by hand.
+
+See [`docs/INTERN_IDENTITY_MODEL.md`](./INTERN_IDENTITY_MODEL.md) for the higher-level model.
 
 ## Required AWS Primitives
 
@@ -29,11 +39,12 @@ The intern session role should allow:
 ### 2) Lambda execution role
 Create a dedicated execution role, for example:
 
-- `LearningLabLambdaExecutionRole`
+- `interns-lambda-execution-role`
 
 It should trust `lambda.amazonaws.com`.
 
 The intern role must be able to pass this role to Lambda with `iam:PassRole`.
+The platform exposes this role ARN in the lab session so interns can select it in the console.
 
 ### 3) Session tagging
 Every lab session and every lab resource should carry the same tag set:
@@ -107,20 +118,15 @@ Use a session-scoped policy like this on the sandbox role:
 
 ## Lambda Test Resource Flow
 
-For the test harness we added `scripts/lambda-lifecycle-test.mjs`:
+For the current end-to-end test:
 
-1. Assumes the sandbox role with session tags.
-2. Creates a tiny Node.js Lambda function.
-3. Tags the function with the session metadata.
-4. Calls the shared cleanup helper with a simulated expired timestamp.
-5. Verifies the function is deleted.
+1. Start a lab session and open the AWS Console.
+2. Create a Lambda function using the shared execution role shown in the lab session.
+3. Leave the session tags in place so cleanup can identify the function.
+4. Click **Stop Lab**.
+5. Start a new session and verify the old Lambda no longer exists.
 
-Run it with:
-
-```bash
-node scripts/lambda-lifecycle-test.mjs
-```
-
+This is the same flow interns will use in practice, so it validates both creation and cleanup.
 ## Cleanup
 
 The cleanup path is shared by:

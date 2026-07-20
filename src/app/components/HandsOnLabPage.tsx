@@ -4,7 +4,9 @@ import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { Alert, AlertDescription } from './ui/alert';
 import { Progress } from './ui/progress';
-import { hasLabBackendConfigured, startLabSession, stopLabSession } from '../lib/labApi';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
+import { hasLabBackendConfigured, startLabSession, stopLabSession, type LabIdentityContext } from '../lib/labApi';
+import { identityForLabSession, type AppUserIdentity, findInternProfileForUser } from '../lib/internProfiles';
 
 const LAB_SESSION_DURATION_MS = 15 * 60 * 1000;
 
@@ -15,6 +17,8 @@ interface LabSession {
   endTime: number | null;
   accountName: string | null;
   accountId: string | null;
+  lambdaExecutionRoleArn: string | null;
+  expiresAt: string | null;
   awsConsoleUrl: string | null;
   loginUrl: string | null;
   credentials: {
@@ -24,7 +28,11 @@ interface LabSession {
   } | null;
 }
 
-export default function HandsOnLabPage() {
+interface HandsOnLabPageProps {
+  currentUser: AppUserIdentity;
+}
+
+export default function HandsOnLabPage({ currentUser }: HandsOnLabPageProps) {
   const autoStartAttempted = useRef(false);
   const [session, setSession] = useState<LabSession>({
     id: '',
@@ -33,6 +41,8 @@ export default function HandsOnLabPage() {
     endTime: null,
     accountName: null,
     accountId: null,
+    lambdaExecutionRoleArn: null,
+    expiresAt: null,
     awsConsoleUrl: null,
     credentials: null,
   });
@@ -40,6 +50,9 @@ export default function HandsOnLabPage() {
   const [timeRemaining, setTimeRemaining] = useState<number>(0);
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [lastConsoleUrl, setLastConsoleUrl] = useState<string | null>(null);
+
+  const assignedProfile = findInternProfileForUser(currentUser.id, currentUser.email) || null;
+  const labIdentity: LabIdentityContext = identityForLabSession(currentUser);
 
   // Timer countdown
   useEffect(() => {
@@ -75,11 +88,11 @@ export default function HandsOnLabPage() {
     setErrorMessage('');
     setSession({ ...session, status: 'starting' });
 
-      if (hasLabBackendConfigured()) {
+    if (hasLabBackendConfigured()) {
       try {
-        const response = await startLabSession();
-          console.log('[lab] startLabSession response:', response);
-          setLastConsoleUrl(response.loginUrl || response.consoleUrl || null);
+        const response = await startLabSession(labIdentity);
+        console.log('[lab] startLabSession response:', response);
+        setLastConsoleUrl(response.loginUrl || response.consoleUrl || null);
         const startTime = Date.now();
         const endTime = startTime + LAB_SESSION_DURATION_MS;
 
@@ -90,6 +103,8 @@ export default function HandsOnLabPage() {
           endTime,
           accountName: response.accountName || null,
           accountId: response.accountId || null,
+          lambdaExecutionRoleArn: response.lambdaExecutionRoleArn || null,
+          expiresAt: response.expiresAt || response.credentials.expiration || null,
           awsConsoleUrl: response.consoleUrl,
           loginUrl: (response as any).loginUrl || null,
           credentials: {
@@ -109,6 +124,8 @@ export default function HandsOnLabPage() {
           endTime: null,
           accountName: null,
           accountId: null,
+          lambdaExecutionRoleArn: null,
+          expiresAt: null,
           awsConsoleUrl: null,
           credentials: null,
         });
@@ -116,7 +133,7 @@ export default function HandsOnLabPage() {
       }
     }
 
-    setErrorMessage('AWS Lab credentials will be available once your AWS admin configures the backend with IAM credentials and role information.');
+    setErrorMessage('AWS Lab credentials will be available once the backend AWS credentials and role information are configured.');
     setSession({
       id: '',
       status: 'inactive',
@@ -124,6 +141,7 @@ export default function HandsOnLabPage() {
       endTime: null,
       accountName: null,
       accountId: null,
+      lambdaExecutionRoleArn: null,
       awsConsoleUrl: null,
       credentials: null,
     });
@@ -140,7 +158,6 @@ export default function HandsOnLabPage() {
       }
     }
 
-    // Simulate API call to stop lab and cleanup resources
     setTimeout(() => {
       setSession({
         id: '',
@@ -149,6 +166,7 @@ export default function HandsOnLabPage() {
         endTime: null,
         accountName: null,
         accountId: null,
+        lambdaExecutionRoleArn: null,
         awsConsoleUrl: null,
         credentials: null,
       });
@@ -159,7 +177,6 @@ export default function HandsOnLabPage() {
   const handleExpireSession = () => {
     const sessionId = session.id;
     setSession({ ...session, status: 'expired' });
-    // Call stop-lab to trigger real AWS resource cleanup
     if (sessionId) {
       stopLabSession(sessionId).catch(() => {});
     }
@@ -171,6 +188,7 @@ export default function HandsOnLabPage() {
         endTime: null,
         accountName: null,
         accountId: null,
+        lambdaExecutionRoleArn: null,
         awsConsoleUrl: null,
         credentials: null,
       });
@@ -183,6 +201,18 @@ export default function HandsOnLabPage() {
     const minutes = Math.floor((totalSeconds % 3600) / 60);
     const seconds = totalSeconds % 60;
     return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+  };
+
+  const formatIstDateTime = (value: string | null) => {
+    if (!value) return '—';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat('en-IN', {
+      timeZone: 'Asia/Kolkata',
+      dateStyle: 'medium',
+      timeStyle: 'medium',
+      hour12: true,
+    }).format(date) + ' IST';
   };
 
   const timeProgress = session.endTime && session.startTime
@@ -226,7 +256,33 @@ export default function HandsOnLabPage() {
         </Alert>
       )}
 
-      {/* Main Lab Control */}
+      <Card>
+        <CardHeader>
+          <CardTitle>AWS Identity assignment</CardTitle>
+          <CardDescription>
+            The intern profile below is the identity used for session tracking in the shared sandbox account.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4 md:grid-cols-2 text-sm">
+          <div className="space-y-2 text-slate-600">
+            <div className="flex justify-between gap-3"><span className="font-medium text-slate-900">Platform user</span><span>{currentUser.name}</span></div>
+            <div className="flex justify-between gap-3"><span className="font-medium text-slate-900">Email</span><span>{currentUser.email}</span></div>
+            <div className="flex justify-between gap-3"><span className="font-medium text-slate-900">AWS username</span><span>{assignedProfile?.awsIdentityCenterUsername || labIdentity.awsIdentityCenterUsername || '—'}</span></div>
+            <div className="flex justify-between gap-3"><span className="font-medium text-slate-900">AWS email</span><span>{assignedProfile?.awsIdentityCenterEmail || labIdentity.awsIdentityCenterEmail || '—'}</span></div>
+          </div>
+          <div className="space-y-2 text-slate-600">
+            <div className="flex justify-between gap-3"><span className="font-medium text-slate-900">Permission set</span><span>{assignedProfile?.permissionSetName || labIdentity.permissionSetName || '—'}</span></div>
+            <div className="flex justify-between gap-3"><span className="font-medium text-slate-900">Sandbox account</span><span>{assignedProfile?.awsAccountId || labIdentity.awsAccountId || '483591406604'}</span></div>
+            <div className="flex justify-between gap-3"><span className="font-medium text-slate-900">Session profile</span><span>{assignedProfile ? 'Assigned' : 'Auto-created'}</span></div>
+            <div className="flex flex-wrap gap-2 pt-1">
+              <Badge variant="outline">Session scoped</Badge>
+              <Badge variant="outline">Auto cleanup</Badge>
+              <Badge variant="outline">Shared account</Badge>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       <div className="bg-white rounded-xl shadow-lg border border-slate-200 p-8">
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-orange-500 to-orange-600 rounded-2xl mb-4">
@@ -234,16 +290,18 @@ export default function HandsOnLabPage() {
           </div>
           <h1 className="text-2xl font-bold text-slate-900 mb-2">AWS Hands-on Lab Environment</h1>
           <p className="text-slate-600">
-            Launch a temporary AWS environment with EC2 and S3 access
+            Launch a temporary AWS sandbox for Lambda practice. Interns create Lambda in the AWS Console, but the app shows the required role and tags so cleanup works automatically.
+          </p>
+          <p className="mt-2 text-xs text-slate-500">
+            Signed in as {currentUser.name} ({currentUser.email})
           </p>
         </div>
 
-        {/* Session Status */}
         <div className="flex items-center justify-center gap-3 mb-6">
           <span className="text-sm font-medium text-slate-600">Status:</span>
           {session.status === 'inactive' && (
             <Badge variant="outline" className="text-slate-600">
-              <Circle className="w-3 h-3 mr-1" />
+              <Clock className="w-3 h-3 mr-1" />
               Not Started
             </Badge>
           )}
@@ -261,7 +319,7 @@ export default function HandsOnLabPage() {
           )}
           {session.status === 'stopping' && (
             <Badge className="bg-orange-100 text-orange-700 hover:bg-orange-100">
-              <Clock className="w-3 h-3 mr-1 animate-spin" />
+              <Square className="w-3 h-3 mr-1 animate-pulse" />
               Stopping...
             </Badge>
           )}
@@ -273,170 +331,96 @@ export default function HandsOnLabPage() {
           )}
         </div>
 
-        {/* Timer Display */}
         {session.status === 'active' && (
-          <div className="mb-8">
-            <div className="flex items-center justify-center gap-2 mb-3">
-              <Clock className="w-5 h-5 text-slate-600" />
-              <span className="text-3xl font-mono font-bold text-slate-900">
-                {formatTime(timeRemaining)}
-              </span>
+          <div className="max-w-md mx-auto mb-6 space-y-2">
+            <div className="flex justify-between text-sm text-slate-600">
+              <span>Session Time Remaining</span>
+              <span className="font-medium">{formatTime(timeRemaining)}</span>
             </div>
-            <Progress value={timeProgress} className="h-2 mb-2" />
-            <p className="text-center text-sm text-slate-600">
-              Session will automatically end and cleanup resources
-            </p>
+            <Progress value={timeProgress} className="h-2" />
           </div>
         )}
 
-        {/* Control Buttons */}
-        <div className="flex gap-3 justify-center mb-8">
-          {session.status === 'inactive' && (
-            <Button
-              onClick={handleStartLab}
-              size="lg"
-              className="bg-orange-600 hover:bg-orange-700"
-            >
-              <Play className="w-5 h-5 mr-2" />
+        <div className="flex justify-center gap-4 mb-6">
+          {session.status === 'inactive' || session.status === 'expired' ? (
+            <Button onClick={handleStartLab} className="bg-orange-600 hover:bg-orange-700">
+              <Play className="w-4 h-4 mr-2" />
               Start Lab
             </Button>
-          )}
-
-          {session.status === 'starting' && (
-            <Button size="lg" disabled className="bg-blue-600">
-              <Clock className="w-5 h-5 mr-2 animate-spin" />
-              Initializing Lab Environment...
-            </Button>
-          )}
-
-          {session.status === 'active' && (
-            <>
-              <Button
-                onClick={() => {
-                  const login = session.loginUrl;
-                  const preferred = (import.meta.env.VITE_AWS_CONSOLE_DESTINATION as string) || session.awsConsoleUrl || '';
-                  if (login) {
-                    window.open(login, '_blank');
-                    return;
-                  }
-                  if (preferred) window.open(preferred, '_blank');
-                }}
-                size="lg"
-                className="bg-green-600 hover:bg-green-700"
-              >
-                <ExternalLink className="w-5 h-5 mr-2" />
-                Open AWS Console
-              </Button>
-              <Button
-                onClick={handleStopLab}
-                size="lg"
-                variant="destructive"
-              >
-                <Square className="w-4 h-4 mr-2" />
-                Stop Lab
-              </Button>
-            </>
-          )}
-
-          {session.status === 'stopping' && (
-            <Button size="lg" disabled variant="destructive">
-              <Clock className="w-5 h-5 mr-2 animate-spin" />
-              Cleaning Up Resources...
+          ) : (
+            <Button onClick={handleStopLab} variant="outline" className="border-red-200 text-red-700 hover:bg-red-50">
+              <Square className="w-4 h-4 mr-2" />
+              Stop Lab
             </Button>
           )}
         </div>
 
-        {lastConsoleUrl && (
-          <div className="text-center text-xs text-slate-500 mt-2">
-            Returned AWS URL: <a className="text-blue-600 underline break-all" href={lastConsoleUrl} target="_blank" rel="noreferrer">{lastConsoleUrl}</a>
+        {session.status === 'active' && (
+          <div className="bg-slate-50 rounded-lg p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold text-slate-900">AWS Console Access</h3>
+                <p className="text-sm text-slate-600">Your temporary credentials are ready</p>
+              </div>
+              {lastConsoleUrl && (
+                <a
+                  href={lastConsoleUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-orange-600 hover:text-orange-700"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                </a>
+              )}
+            </div>
+            <div className="grid gap-2 text-sm text-slate-600">
+              <div className="flex justify-between">
+                <span>Account:</span>
+                <span className="font-medium">{session.accountName || 'AWS Sandbox'}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Account ID:</span>
+                <span className="font-medium">{session.accountId || '—'}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span>Session ID:</span>
+                <span className="font-medium break-all text-right">{session.id || '—'}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span>Lambda role:</span>
+                <span className="font-medium text-right break-all">{session.lambdaExecutionRoleArn || '—'}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span>Expires at (IST):</span>
+                <span className="font-medium text-right break-all">{formatIstDateTime(session.expiresAt)}</span>
+              </div>
+            </div>
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 space-y-1">
+              <p className="font-medium">Before creating a Lambda in AWS Console:</p>
+              <p>1. Name it with <span className="font-mono">learninglab-*</span></p>
+              <p>2. Choose the existing role shown above</p>
+              <p>3. Add tags with the exact values shown above.</p>
+              <p className="font-mono">Environment=LearningLab</p>
+              <p className="font-mono">SessionId={session.id || '&lt;this session&gt;'}</p>
+              <p className="font-mono">ExpirationTime={session.endTime || '&lt;timestamp&gt;'}</p>
+              <p className="text-[11px] text-amber-800">The expiry display above is in IST; the tag value is the session end timestamp number.</p>
+            </div>
           </div>
         )}
-
-        {/* Permissions Info */}
-        <div className="border-t border-slate-200 pt-6">
-          <h3 className="font-semibold text-slate-900 mb-3 flex items-center gap-2">
-            <Shield className="w-5 h-5 text-orange-600" />
-            Lab Permissions
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div className="flex items-start gap-2 text-sm">
-              <CheckCircle2 className="w-4 h-4 text-green-600 mt-0.5 flex-shrink-0" />
-              <span className="text-slate-700">EC2 instance launch and management</span>
-            </div>
-            <div className="flex items-start gap-2 text-sm">
-              <CheckCircle2 className="w-4 h-4 text-green-600 mt-0.5 flex-shrink-0" />
-              <span className="text-slate-700">S3 bucket creation and object upload</span>
-            </div>
-            <div className="flex items-start gap-2 text-sm">
-              <CheckCircle2 className="w-4 h-4 text-green-600 mt-0.5 flex-shrink-0" />
-              <span className="text-slate-700">Read-only access to VPC resources</span>
-            </div>
-            <div className="flex items-start gap-2 text-sm">
-              <CheckCircle2 className="w-4 h-4 text-green-600 mt-0.5 flex-shrink-0" />
-              <span className="text-slate-700">CloudWatch logs viewing</span>
-            </div>
-          </div>
-        </div>
       </div>
 
-      {/* Credentials Card - Only shown when active */}
-      {session.status === 'active' && session.credentials && (
-        <div className="bg-white rounded-xl shadow border border-slate-200 p-6">
-          <h3 className="font-semibold text-slate-900 mb-4 flex items-center gap-2">
-            <Database className="w-5 h-5 text-orange-600" />
-            Temporary AWS Credentials
-          </h3>
-          {(session.accountName || session.accountId) && (
-            <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
-              <span className="font-medium text-slate-900">AWS Account:</span> {session.accountName || 'Unknown'}{session.accountId ? ` (${session.accountId})` : ''}
-            </div>
-          )}
-          <div className="space-y-3">
-            <div className="bg-slate-50 rounded-lg p-3">
-              <p className="text-xs font-medium text-slate-600 mb-1">Access Key ID</p>
-              <code className="text-sm text-slate-900 break-all">{session.credentials.accessKeyId}</code>
-            </div>
-            <div className="bg-slate-50 rounded-lg p-3">
-              <p className="text-xs font-medium text-slate-600 mb-1">Secret Access Key</p>
-              <code className="text-sm text-slate-900 break-all">{session.credentials.secretAccessKey}</code>
-            </div>
-            <div className="bg-slate-50 rounded-lg p-3">
-              <p className="text-xs font-medium text-slate-600 mb-1">Session Token</p>
-              <code className="text-sm text-slate-900 break-all">{session.credentials.sessionToken}</code>
-            </div>
-          </div>
-          <Alert className="mt-4 border-orange-200 bg-orange-50">
-            <AlertCircle className="h-4 w-4 text-orange-600" />
-            <AlertDescription className="text-orange-800 text-sm">
-              These credentials are temporary and will expire when the session ends. Do not share them.
-            </AlertDescription>
-          </Alert>
+      <div className="grid md:grid-cols-2 gap-4">
+        <div className="bg-white rounded-lg p-4 border border-slate-200">
+          <Shield className="w-5 h-5 text-orange-600 mb-2" />
+          <h4 className="font-semibold text-slate-900 mb-1">Secure & Temporary</h4>
+          <p className="text-sm text-slate-600">Your lab session automatically expires after 15 minutes.</p>
         </div>
-      )}
-
-      {/* Resource Cleanup Info */}
-      <div className="bg-blue-50 border border-blue-200 rounded-xl p-6">
-        <h3 className="font-semibold text-blue-900 mb-2">Automatic Resource Cleanup</h3>
-        <p className="text-sm text-orange-800">
-          When your session expires or you stop the lab, all AWS resources (EC2 instances, S3 buckets, etc.)
-          will be automatically deleted within 5 minutes. This ensures no unexpected charges and maintains
-          a clean environment for the next session.
-        </p>
+        <div className="bg-white rounded-lg p-4 border border-slate-200">
+          <Database className="w-5 h-5 text-orange-600 mb-2" />
+          <h4 className="font-semibold text-slate-900 mb-1">Real AWS Services</h4>
+          <p className="text-sm text-slate-600">Practice with actual AWS Lambda resources in a safe sandbox.</p>
+        </div>
       </div>
     </div>
-  );
-}
-
-function Circle({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      viewBox="0 0 24 24"
-    >
-      <circle cx="12" cy="12" r="10" />
-    </svg>
   );
 }

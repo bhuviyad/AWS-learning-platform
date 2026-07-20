@@ -1,6 +1,6 @@
 # AWS Learning Lab Platform
 
-A full-stack web application that provides an interactive learning platform for AWS services with hands-on lab environments.
+A full-stack web application that provides an interactive learning platform for AWS services with hands-on lab environments using a shared sandbox account and per-intern identities.
 
 ## Features
 
@@ -11,15 +11,24 @@ A full-stack web application that provides an interactive learning platform for 
 
 ### 2. Hands-on Lab Environment
 - **Temporary AWS Access**: Generate 1-hour temporary AWS credentials
+- **Per-intern Identities**: Each intern is mapped to their own AWS identity in the shared sandbox account
 - **Session Management**: Automatic session tracking and expiration
-- **Resource Cleanup**: Automatic deletion of all resources after session ends
-- **Limited Permissions**: Scoped IAM permissions (EC2, S3 basic access only)
+- **Resource Cleanup**: Automatic deletion of expired session resources
+- **Limited Permissions**: Scoped IAM permissions with tag-based isolation
 
-### 3. Security Features
+### 3. Shared Sandbox Model
+- **One AWS Account**: Lower cost than separate accounts per intern
+- **Session Isolation**: Intern resources are tagged and cleaned up by session
+- **Automation**: Cleanup jobs run on a schedule
+- **Guardrails**: IAM and budgets keep usage controlled
+
+### 4. Security Features
 - **No Permanent Credentials**: All AWS access uses temporary STS credentials
 - **Auto-expiration**: Sessions automatically expire after 1 hour
 - **Least Privilege**: Users only get minimal required permissions
 - **Resource Isolation**: Each session is isolated from others
+- **Identity Mapping**: Intern identity is stored and tracked in Supabase
+
 
 ## Technology Stack
 
@@ -112,181 +121,59 @@ VITE_SUPABASE_URL=your_supabase_project_url
 VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
 
 # AWS Configuration
-AWS_REGION=us-east-1
-AWS_ACCOUNT_ID=your_aws_account_id
-AWS_LAB_ROLE_ARN=arn:aws:iam::ACCOUNT_ID:role/LabEnvironmentRole
-AWS_SESSION_DURATION=3600
+AWS_REGION=ap-south-1
+AWS_ACCOUNT_ID=483591406604
+AWS_LAB_ROLE_ARN=arn:aws:iam::483591406604:role/interns-sandbox-role
+AWS_LAMBDA_EXECUTION_ROLE_ARN=arn:aws:iam::483591406604:role/interns-lambda-execution-role
+AWS_SESSION_DURATION=900
 
 # Optional: AWS credentials for backend (use IAM role in production)
 AWS_ACCESS_KEY_ID=your_access_key
 AWS_SECRET_ACCESS_KEY=your_secret_key
 ```
 
+See [`docs/INTERN_IDENTITY_MODEL.md`](docs/INTERN_IDENTITY_MODEL.md) for the per-intern identity approach.
+
+Each intern is assigned an identity profile in Supabase and the platform uses automatic session tags to isolate resources inside the shared sandbox account.
+
 ## AWS Setup Guide
 
-### 1. Create IAM Role for Lab Sessions
+For the current shared-account approach, see:
 
-Create an IAM role named `LabEnvironmentRole` with the following trust policy:
+- [`docs/INTERN_IDENTITY_MODEL.md`](docs/INTERN_IDENTITY_MODEL.md)
+- [`docs/AWS_INTEGRATION.md`](docs/AWS_INTEGRATION.md)
+- [`docs/SUPABASE_SETUP.md`](docs/SUPABASE_SETUP.md)
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "AWS": "arn:aws:iam::YOUR_ACCOUNT_ID:root"
-      },
-      "Action": "sts:AssumeRole",
-      "Condition": {
-        "StringEquals": {
-          "sts:ExternalId": "learning-lab-platform"
-        }
-      }
-    }
-  ]
-}
-```
+### What to configure in AWS
+- Shared sandbox account: `483591406604`
+- Intern sandbox role: `interns-sandbox-role`
+- Lambda execution role: `interns-lambda-execution-role`
+- Per-intern identities mapped in Supabase
+- Session-tagged cleanup for expired resources
 
-### 2. Attach Permission Policy
+### What interns do
+1. Sign into the learning platform
+2. Open the AWS sandbox
+3. Create resources in the shared account
+4. Use the shared Lambda execution role shown in the lab session
+5. Let the automatic cleanup remove expired resources when the session ends
 
-Create and attach this policy to the role:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "LambdaSessionScoped",
-      "Effect": "Allow",
-      "Action": [
-        "lambda:CreateFunction",
-        "lambda:DeleteFunction",
-        "lambda:GetFunction",
-        "lambda:ListFunctions",
-        "lambda:ListTags",
-        "lambda:TagResource",
-        "lambda:UntagResource"
-      ],
-      "Resource": "arn:aws:lambda:REGION:ACCOUNT_ID:function:learninglab-*",
-      "Condition": {
-        "StringEquals": {
-          "aws:ResourceTag/Environment": "LearningLab",
-          "aws:ResourceTag/SessionId": "${aws:PrincipalTag/SessionId}"
-        }
-      }
-    },
-    {
-      "Sid": "LambdaCreateWithRequiredTags",
-      "Effect": "Allow",
-      "Action": "lambda:CreateFunction",
-      "Resource": "*",
-      "Condition": {
-        "StringEquals": {
-          "aws:RequestTag/Environment": "LearningLab",
-          "aws:RequestTag/SessionId": "${aws:PrincipalTag/SessionId}"
-        },
-        "ForAllValues:StringEquals": {
-          "aws:TagKeys": ["Environment", "SessionId", "ExpirationTime"]
-        }
-      }
-    },
-    {
-      "Sid": "PassLambdaExecutionRole",
-      "Effect": "Allow",
-      "Action": "iam:PassRole",
-      "Resource": "arn:aws:iam::ACCOUNT_ID:role/LearningLabLambdaExecutionRole",
-      "Condition": {
-        "StringEquals": {
-          "iam:PassedToService": "lambda.amazonaws.com"
-        }
-      }
-    }
-  ]
-}
-```
-
-You also need a Lambda execution role named `LearningLabLambdaExecutionRole` that trusts `lambda.amazonaws.com`.
-
-The lab session is now tagged with `Environment`, `SessionId`, and `ExpirationTime`, and a cleanup job removes expired Lambda functions automatically.
-
-
-### 3. Automated Timeout Cleanup
-
-The platform now uses a scheduled cleanup job to delete expired Lambda resources automatically. The job scans for `LearningLab`-tagged functions, checks their `ExpirationTime`, and deletes only the functions that belong to the matching session.
-
-If you want to run the same logic manually, use the new local test harness:
-
-```bash
-node scripts/lambda-lifecycle-test.mjs
-```
-
-### 4. Schedule the Cleanup Job
-
-Trigger the cleanup endpoint every few minutes with your scheduler of choice (Supabase scheduled job, EventBridge, cron, etc.) so expired lab resources are removed even if the user closes the tab.
+### What the platform does
+- tracks each intern profile
+- starts/stops a lab session
+- tags sessions for isolation
+- schedules cleanup
+- enforces budgets and guardrails
 
 ## Supabase Setup
 
-### 1. Database Schema
+See the Supabase docs and migration for the current schema:
 
-Create the following tables in your Supabase project:
-
-```sql
--- User sessions table
-CREATE TABLE lab_sessions (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES auth.users(id) NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('starting', 'active', 'stopping', 'expired')),
-    start_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    end_time TIMESTAMPTZ NOT NULL,
-    aws_access_key_id TEXT,
-    aws_session_token TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- Activity logs table
-CREATE TABLE activity_logs (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    session_id UUID REFERENCES lab_sessions(id) NOT NULL,
-    action TEXT NOT NULL,
-    resource_type TEXT,
-    resource_id TEXT,
-    details JSONB,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- Indexes
-CREATE INDEX idx_lab_sessions_user_id ON lab_sessions(user_id);
-CREATE INDEX idx_lab_sessions_status ON lab_sessions(status);
-CREATE INDEX idx_activity_logs_session_id ON activity_logs(session_id);
-
--- Enable Row Level Security
-ALTER TABLE lab_sessions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE activity_logs ENABLE ROW LEVEL SECURITY;
-
--- RLS Policies
-CREATE POLICY "Users can view their own sessions"
-    ON lab_sessions FOR SELECT
-    USING (auth.uid() = user_id);
-
-CREATE POLICY "Users can view their own activity logs"
-    ON activity_logs FOR SELECT
-    USING (
-        session_id IN (
-            SELECT id FROM lab_sessions WHERE user_id = auth.uid()
-        )
-    );
-```
-
-### 2. Edge Functions
-
-The platform uses Supabase Edge Functions for AWS integration. Key endpoints:
-
-- `POST /api/lab/start` - Start a new lab session
-- `POST /api/lab/stop` - Stop active session
-- `GET /api/lab/status` - Get session status
-- `POST /api/lab/assume-role` - Generate temporary AWS credentials
+- `supabase/migrations/004_per_intern_identity_center.sql`
+- `intern_profiles`
+- `lab_sessions`
+- `lab_resources`
+- `activity_logs`
 
 ## Usage
 
@@ -295,15 +182,33 @@ The platform uses Supabase Edge Functions for AWS integration. Key endpoints:
 1. **Sign In**: Log in with your credentials
 2. **Learn**: Watch video lessons and track your progress
 3. **Practice**: Start a hands-on lab session
-4. **Experiment**: Use the AWS Console with temporary credentials
+4. **Experiment**: Use the AWS Console with the shared sandbox account
 5. **Complete**: Stop the lab when finished (or let it auto-expire)
 
 ### For Administrators
 
 1. Monitor active sessions in Supabase dashboard
-2. Review activity logs for security auditing
-3. Adjust IAM policies to modify lab permissions
-4. Configure CloudWatch alarms for cost monitoring
+2. Review activity logs and intern profiles
+3. Adjust IAM policies and permission sets
+4. Review budgets and cleanup logs
+
+### Cleanup
+
+Automatic cleanup runs on a schedule and deletes only resources matching the expired session tags.
+
+Use the local test harness if you need to verify the cleanup flow manually:
+
+```bash
+node scripts/lambda-lifecycle-test.mjs --pause
+```
+
+## Monitoring & Logging
+
+- **CloudWatch**: Monitor Lambda execution and AWS API calls
+- **Supabase Logs**: Track edge function execution
+- **Activity Logs**: Review all user actions in the database
+- **Cost Explorer**: Monitor AWS usage and costs
+- **Budget Alerts**: Keep sandbox spend controlled
 
 ## Security Considerations
 

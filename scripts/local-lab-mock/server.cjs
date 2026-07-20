@@ -66,7 +66,7 @@ function createLambdaClientFromBackend() {
   });
 }
 
-async function assumeSandboxRole(sessionId) {
+async function assumeSandboxRole(sessionId, identity) {
   const backend = getBackendCredentials();
   if (!backend || !process.env.AWS_LAB_ROLE_ARN) {
     console.warn('[lab] Missing backend credentials — using fake credentials');
@@ -83,15 +83,24 @@ async function assumeSandboxRole(sessionId) {
   });
 
   const expiration = Date.now() + 900 * 1000;
+  const tags = [
+    { Key: 'Environment', Value: 'LearningLab' },
+    { Key: 'SessionId', Value: sessionId },
+    { Key: 'ExpirationTime', Value: String(expiration) },
+  ];
+  if (identity.userId) tags.push({ Key: 'UserId', Value: identity.userId });
+  if (identity.userEmail) tags.push({ Key: 'UserEmail', Value: identity.userEmail });
+  if (identity.userName) tags.push({ Key: 'UserName', Value: identity.userName });
+  if (identity.awsIdentityCenterUsername) tags.push({ Key: 'IdentityCenterUsername', Value: identity.awsIdentityCenterUsername });
+  if (identity.awsIdentityCenterEmail) tags.push({ Key: 'IdentityCenterEmail', Value: identity.awsIdentityCenterEmail });
+  if (identity.permissionSetName) tags.push({ Key: 'PermissionSetName', Value: identity.permissionSetName });
+  if (identity.awsAccountId) tags.push({ Key: 'AccountId', Value: identity.awsAccountId });
+
   const response = await sts.send(new AssumeRoleCommand({
     RoleArn: process.env.AWS_LAB_ROLE_ARN,
     RoleSessionName: `lab-${sessionId.slice(0, 8)}`,
     DurationSeconds: 900,
-    Tags: [
-      { Key: 'Environment', Value: 'LearningLab' },
-      { Key: 'SessionId', Value: sessionId },
-      { Key: 'ExpirationTime', Value: String(expiration) },
-    ],
+    Tags: tags,
   }));
 
   const creds = response.Credentials;
@@ -142,26 +151,36 @@ async function cleanupExpiredResources() {
 app.post('/start-lab', async (req, res) => {
   const sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const destination = (req.body && req.body.destination) || process.env.VITE_AWS_CONSOLE_DESTINATION || '';
+  const identity = {
+    userId: (req.body && req.body.userId) || '',
+    userEmail: (req.body && req.body.userEmail) || '',
+    userName: (req.body && req.body.userName) || '',
+    awsIdentityCenterUsername: (req.body && req.body.awsIdentityCenterUsername) || '',
+    awsIdentityCenterEmail: (req.body && req.body.awsIdentityCenterEmail) || '',
+    permissionSetName: (req.body && req.body.permissionSetName) || '',
+    awsAccountId: (req.body && req.body.awsAccountId) || process.env.LAB_ACCOUNT_ID || '',
+  };
   const accountId = process.env.LAB_ACCOUNT_ID || '';
   const accountName = process.env.LAB_ACCOUNT_NAME || '';
+  const lambdaExecutionRoleArn = process.env.AWS_LAMBDA_EXECUTION_ROLE_ARN || '';
 
-  console.log('[lab] start-lab ->', sessionId);
+  console.log('[lab] start-lab ->', sessionId, identity.userEmail || identity.userId || identity.userName || 'anonymous');
 
   try {
-    const credentials = await assumeSandboxRole(sessionId);
+    const credentials = await assumeSandboxRole(sessionId, identity);
+    const loginUrl = destination ? await buildLoginUrl(credentials, destination) : null;
 
-    let loginUrl = null;
-    if (destination) {
-      try { loginUrl = await buildLoginUrl(credentials, destination); }
-      catch (e) { console.error('[lab] federation URL failed ->', e.message); }
-    }
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
 
     res.json({
       sessionId,
+      ...identity,
       credentials,
       ...(accountName ? { accountName } : {}),
       ...(accountId ? { accountId } : {}),
       ...(destination ? { consoleUrl: destination } : {}),
+      ...(lambdaExecutionRoleArn ? { lambdaExecutionRoleArn } : {}),
+      expiresAt,
       ...(loginUrl ? { loginUrl } : {}),
     });
 
