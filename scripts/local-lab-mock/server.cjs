@@ -164,6 +164,67 @@ async function deleteInternProfileFromDb(profileId) {
   if (error) throw error;
 }
 
+function mapLearningProgressRow(row) {
+  return {
+    id: row.id,
+    appUserId: row.app_user_id || row.appUserId || '',
+    appUserEmail: row.app_user_email || row.appUserEmail || '',
+    appUserName: row.app_user_name || row.appUserName || '',
+    lessonId: row.lesson_id || row.lessonId || '',
+    lessonTitle: row.lesson_title || row.lessonTitle || '',
+    completed: Boolean(row.completed),
+    completedAt: row.completed_at || row.completedAt || null,
+    createdAt: row.created_at || row.createdAt || '',
+    updatedAt: row.updated_at || row.updatedAt || '',
+  };
+}
+
+function mapLearningProgressPayload(input) {
+  const completed = input.completed !== false;
+  return {
+    app_user_id: input.userId,
+    app_user_email: input.userEmail || '',
+    app_user_name: input.userName || '',
+    lesson_id: input.lessonId,
+    lesson_title: input.lessonTitle || '',
+    completed,
+    completed_at: completed ? new Date().toISOString() : null,
+  };
+}
+
+async function listLearningProgressFromDb(userId) {
+  const client = getSupabaseAdminClient();
+  if (!client) {
+    throw new Error('Supabase is not configured');
+  }
+
+  const { data, error } = await client
+    .from('learning_progress')
+    .select('*')
+    .eq('app_user_id', userId)
+    .order('lesson_id', { ascending: true });
+
+  if (error) throw error;
+  return (data || []).map(mapLearningProgressRow);
+}
+
+async function saveLearningProgressToDb(input) {
+  const client = getSupabaseAdminClient();
+  if (!client) {
+    throw new Error('Supabase is not configured');
+  }
+
+  const payload = mapLearningProgressPayload(input);
+  const { data, error } = await client
+    .from('learning_progress')
+    .upsert(payload, { onConflict: 'app_user_id,lesson_id' })
+    .select('*')
+    .single();
+
+  if (error) throw error;
+  return mapLearningProgressRow(data);
+}
+
 async function assumeSandboxRole(sessionId, identity) {
   const backend = getBackendCredentials();
   if (!backend || !process.env.AWS_LAB_ROLE_ARN) {
@@ -368,6 +429,45 @@ app.delete('/intern-profiles/:id', async (req, res) => {
     res.json({ success: true, profileId });
   } catch (error) {
     console.error('[intern-profiles] delete error ->', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/learning-progress', async (req, res) => {
+  const userId = String(req.query.userId || '').trim();
+  if (!userId) {
+    return res.status(400).json({ error: 'userId is required' });
+  }
+
+  try {
+    const progress = await listLearningProgressFromDb(userId);
+    res.json({ progress });
+  } catch (error) {
+    console.error('[learning-progress] list error ->', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/learning-progress', async (req, res) => {
+  const body = req.body || {};
+  const input = {
+    userId: String(body.userId || '').trim(),
+    userEmail: String(body.userEmail || '').trim(),
+    userName: String(body.userName || '').trim(),
+    lessonId: String(body.lessonId || '').trim(),
+    lessonTitle: String(body.lessonTitle || '').trim(),
+    completed: body.completed !== false,
+  };
+
+  if (!input.userId || !input.lessonId) {
+    return res.status(400).json({ error: 'userId and lessonId are required' });
+  }
+
+  try {
+    const progress = await saveLearningProgressToDb(input);
+    res.json({ progress });
+  } catch (error) {
+    console.error('[learning-progress] save error ->', error.message);
     res.status(500).json({ error: error.message });
   }
 });

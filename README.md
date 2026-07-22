@@ -157,7 +157,15 @@ For the current shared-account approach, see:
 - Lambda execution role: `interns-lambda-execution-role`
 - Per-intern identities mapped in Supabase
 - Database-backed intern profiles
+- Learning progress tracking in Supabase
 - Session-tagged cleanup for expired resources
+
+### Learning progress storage
+- `learning_progress` keeps each intern's completed lessons separate
+- progress is keyed by app user + lesson id
+- the Learning page restores each user's completion state on reload
+- the admin can still manage intern identities on the Interns page
+
 
 ### What interns do
 1. Sign into the learning platform
@@ -179,9 +187,12 @@ For the current shared-account approach, see:
 See the Supabase docs and migration for the current schema:
 
 - `supabase/migrations/004_per_intern_identity_center.sql`
+- `supabase/migrations/005_intern_profiles_shared_fields.sql`
+- `supabase/migrations/006_learning_progress.sql`
 - `intern_profiles`
 - `lab_sessions`
 - `lab_resources`
+- `learning_progress`
 - `activity_logs`
 
 ## Usage

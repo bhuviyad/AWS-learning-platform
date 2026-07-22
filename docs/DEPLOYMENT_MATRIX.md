@@ -70,6 +70,11 @@ Use Render for the hosted backend / scheduler runner.
 - `AWS_LAMBDA_EXECUTION_ROLE_ARN`
 - `LAB_ACCOUNT_ID`
 - `LAB_ACCOUNT_NAME`
+
+### Supabase migrations to apply
+- `004_per_intern_identity_center.sql`
+- `005_intern_profiles_shared_fields.sql`
+- `006_learning_progress.sql`
 ### Add a cron job
 Create a Render cron job that runs every 5 minutes and calls:
 

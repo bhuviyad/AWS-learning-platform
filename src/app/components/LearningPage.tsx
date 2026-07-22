@@ -1,8 +1,11 @@
-import { useState } from 'react';
-import { Play, CheckCircle2, Circle, Clock, BookOpen } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Play, CheckCircle2, Circle, Clock, BookOpen, Loader2 } from 'lucide-react';
 import { Button } from './ui/button';
 import { Progress } from './ui/progress';
 import { Badge } from './ui/badge';
+import { Alert, AlertDescription } from './ui/alert';
+import { loadCompletedLessonIds, markLessonComplete } from '../lib/learningProgress';
+import type { AppUserIdentity } from '../lib/internProfiles';
 
 interface Lesson {
   id: string;
@@ -12,19 +15,23 @@ interface Lesson {
   videoUrl: string;
 }
 
-const mockLessons: Lesson[] = [
+interface LearningPageProps {
+  currentUser: AppUserIdentity;
+}
+
+const baseLessons: Lesson[] = [
   {
     id: '1',
     title: 'Introduction to AWS Cloud',
     duration: '12:30',
-    completed: true,
+    completed: false,
     videoUrl: 'https://www.youtube.com/embed/a9__D53WsUs',
   },
   {
     id: '2',
     title: 'EC2 Fundamentals',
     duration: '18:45',
-    completed: true,
+    completed: false,
     videoUrl: 'https://www.youtube.com/embed/iHX-jtKIVNA',
   },
   {
@@ -57,25 +64,88 @@ const mockLessons: Lesson[] = [
   },
 ];
 
-export default function LearningPage() {
-  const [currentLesson, setCurrentLesson] = useState<Lesson>(mockLessons[2]);
-  const [lessons, setLessons] = useState(mockLessons);
+function applyCompletionState(lessons: Lesson[], completedLessonIds: string[]) {
+  const completedSet = new Set(completedLessonIds);
+  return lessons.map((lesson) => ({
+    ...lesson,
+    completed: completedSet.has(lesson.id),
+  }));
+}
 
-  const completedCount = lessons.filter((l) => l.completed).length;
-  const progress = (completedCount / lessons.length) * 100;
+export default function LearningPage({ currentUser }: LearningPageProps) {
+  const [currentLessonId, setCurrentLessonId] = useState(baseLessons[2]?.id || '3');
+  const [lessons, setLessons] = useState<Lesson[]>(baseLessons);
+  const [isLoading, setIsLoading] = useState(true);
+  const [savingLessonId, setSavingLessonId] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
 
-  const markAsComplete = (lessonId: string) => {
-    setLessons((prev) =>
-      prev.map((lesson) =>
-        lesson.id === lessonId ? { ...lesson, completed: true } : lesson
-      )
-    );
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadProgress() {
+      setIsLoading(true);
+      setErrorMessage('');
+
+      try {
+        const completedLessonIds = await loadCompletedLessonIds(currentUser);
+        if (cancelled) return;
+        setLessons(applyCompletionState(baseLessons, completedLessonIds));
+      } catch (error) {
+        if (cancelled) return;
+        setErrorMessage(error instanceof Error ? error.message : 'Unable to load learning progress.');
+        setLessons(baseLessons);
+      } finally {
+        if (!cancelled) {
+          setIsLoading(false);
+        }
+      }
+    }
+
+    void loadProgress();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser.id, currentUser.email, currentUser.name]);
+
+  const currentLesson = useMemo(
+    () => lessons.find((lesson) => lesson.id === currentLessonId) || lessons[0] || baseLessons[0],
+    [currentLessonId, lessons],
+  );
+
+  const completedCount = lessons.filter((lesson) => lesson.completed).length;
+  const progress = lessons.length > 0 ? (completedCount / lessons.length) * 100 : 0;
+
+  const markAsComplete = async (lessonId: string) => {
+    const lesson = lessons.find((item) => item.id === lessonId);
+    if (!lesson || lesson.completed) return;
+
+    setSavingLessonId(lessonId);
+    setErrorMessage('');
+
+    try {
+      await markLessonComplete(currentUser, { id: lesson.id, title: lesson.title });
+      setLessons((prev) =>
+        prev.map((item) =>
+          item.id === lessonId ? { ...item, completed: true } : item,
+        ),
+      );
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Unable to save lesson completion.');
+    } finally {
+      setSavingLessonId('');
+    }
   };
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-      {/* Video Player Section */}
       <div className="lg:col-span-2 space-y-4">
+        {errorMessage && (
+          <Alert className="border-red-200 bg-red-50">
+            <AlertDescription className="text-red-800">{errorMessage}</AlertDescription>
+          </Alert>
+        )}
+
         <div className="bg-white rounded-xl shadow border border-slate-200 overflow-hidden">
           <div className="aspect-video bg-black">
             <iframe
@@ -92,9 +162,17 @@ export default function LearningPage() {
           <div className="p-6">
             <div className="flex items-start justify-between mb-4">
               <div className="flex-1">
-                <h2 className="text-xl font-semibold text-slate-900 mb-2">
-                  {currentLesson.title}
-                </h2>
+                <div className="flex items-center gap-2 mb-2">
+                  <h2 className="text-xl font-semibold text-slate-900">
+                    {currentLesson.title}
+                  </h2>
+                  {isLoading && (
+                    <Badge variant="outline" className="text-slate-500 border-slate-200">
+                      <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                      Syncing
+                    </Badge>
+                  )}
+                </div>
                 <div className="flex items-center gap-4 text-sm text-slate-600">
                   <span className="flex items-center gap-1">
                     <Clock className="w-4 h-4" />
@@ -113,9 +191,19 @@ export default function LearningPage() {
                 <Button
                   onClick={() => markAsComplete(currentLesson.id)}
                   className="bg-green-600 hover:bg-green-700"
+                  disabled={savingLessonId === currentLesson.id || isLoading}
                 >
-                  <CheckCircle2 className="w-4 h-4 mr-2" />
-                  Mark Complete
+                  {savingLessonId === currentLesson.id ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-4 h-4 mr-2" />
+                      Mark Complete
+                    </>
+                  )}
                 </Button>
               )}
             </div>
@@ -131,9 +219,7 @@ export default function LearningPage() {
         </div>
       </div>
 
-      {/* Lessons Sidebar */}
       <div className="space-y-4">
-        {/* Progress Card */}
         <div className="bg-white rounded-xl shadow border border-slate-200 p-6">
           <div className="flex items-center justify-between mb-3">
             <h3 className="font-semibold text-slate-900">Your Progress</h3>
@@ -147,9 +233,11 @@ export default function LearningPage() {
               ? 'Course completed! 🎉'
               : `${lessons.length - completedCount} lessons remaining`}
           </p>
+          <p className="text-xs text-slate-500 mt-2">
+            Progress is tracked separately for each intern.
+          </p>
         </div>
 
-        {/* Lessons List */}
         <div className="bg-white rounded-xl shadow border border-slate-200">
           <div className="p-4 border-b border-slate-200">
             <h3 className="font-semibold text-slate-900 flex items-center gap-2">
@@ -162,7 +250,7 @@ export default function LearningPage() {
             {lessons.map((lesson, index) => (
               <button
                 key={lesson.id}
-                onClick={() => setCurrentLesson(lesson)}
+                onClick={() => setCurrentLessonId(lesson.id)}
                 className={`w-full p-4 text-left hover:bg-slate-50 transition-colors ${
                   currentLesson.id === lesson.id ? 'bg-orange-50' : ''
                 }`}
@@ -181,7 +269,7 @@ export default function LearningPage() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
                       <span className="text-xs font-medium text-slate-500">
-                        Lesson {index + 1}
+                        Module {index + 1}
                       </span>
                       {currentLesson.id === lesson.id && (
                         <Badge variant="outline" className="text-xs border-orange-300 text-orange-700">

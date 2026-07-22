@@ -138,7 +138,7 @@ export default function App() {
       <main className="flex-1 overflow-auto">
         <div className="max-w-7xl mx-auto p-6">
           {currentPage === 'learning' ? (
-            <LearningPage />
+            <LearningPage currentUser={currentUser} />
           ) : currentPage === 'lab' ? (
             <HandsOnLabPage currentUser={currentUser} />
           ) : canAccessInterns ? (
