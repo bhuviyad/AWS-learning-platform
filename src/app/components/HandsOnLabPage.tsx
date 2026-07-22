@@ -302,12 +302,12 @@ export default function HandsOnLabPage({ currentUser }: HandsOnLabPageProps) {
           <div className="space-y-2 text-slate-600">
             <div className="flex justify-between gap-3"><span className="font-medium text-slate-900">Platform user</span><span>{currentUser.name}</span></div>
             <div className="flex justify-between gap-3"><span className="font-medium text-slate-900">Email</span><span>{currentUser.email}</span></div>
-            <div className="flex justify-between gap-3"><span className="font-medium text-slate-900">AWS username</span><span>{assignedProfile?.awsIdentityCenterUsername || labIdentity.awsIdentityCenterUsername || '—'}</span></div>
-            <div className="flex justify-between gap-3"><span className="font-medium text-slate-900">AWS email</span><span>{assignedProfile?.awsIdentityCenterEmail || labIdentity.awsIdentityCenterEmail || '—'}</span></div>
+            <div className="flex justify-between gap-3"><span className="font-medium text-slate-900">AWS username</span><span>{assignedProfile?.awsIdentityCenterUsername || labIdentity?.awsIdentityCenterUsername || '—'}</span></div>
+            <div className="flex justify-between gap-3"><span className="font-medium text-slate-900">AWS email</span><span>{assignedProfile?.awsIdentityCenterEmail || labIdentity?.awsIdentityCenterEmail || '—'}</span></div>
           </div>
           <div className="space-y-2 text-slate-600">
-            <div className="flex justify-between gap-3"><span className="font-medium text-slate-900">Permission set</span><span>{assignedProfile?.permissionSetName || labIdentity.permissionSetName || '—'}</span></div>
-            <div className="flex justify-between gap-3"><span className="font-medium text-slate-900">Sandbox account</span><span>{assignedProfile?.awsAccountId || labIdentity.awsAccountId || '483591406604'}</span></div>
+            <div className="flex justify-between gap-3"><span className="font-medium text-slate-900">Permission set</span><span>{assignedProfile?.permissionSetName || labIdentity?.permissionSetName || '—'}</span></div>
+            <div className="flex justify-between gap-3"><span className="font-medium text-slate-900">Sandbox account</span><span>{assignedProfile?.awsAccountId || labIdentity?.awsAccountId || '483591406604'}</span></div>
             <div className="flex justify-between gap-3"><span className="font-medium text-slate-900">Session profile</span><span>{assignedProfile ? 'Assigned' : 'Auto-created'}</span></div>
             <div className="flex flex-wrap gap-2 pt-1">
               <Badge variant="outline">Session scoped</Badge>
