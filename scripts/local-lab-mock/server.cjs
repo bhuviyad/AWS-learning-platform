@@ -102,7 +102,6 @@ function mapInternProfileRow(row) {
 
 function mapInternProfilePayload(profile) {
   return {
-    id: profile.id,
     app_user_id: profile.appUserId || '',
     app_user_email: profile.appUserEmail,
     display_name: profile.appUserName,

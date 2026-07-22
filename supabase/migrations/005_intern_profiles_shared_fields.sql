@@ -1,10 +1,13 @@
 -- Extend intern_profiles so the shared admin/intern profile UI can persist all fields.
 
 alter table if exists intern_profiles
+    add column if not exists notes text not null default '';
+
+alter table if exists intern_profiles
     add column if not exists app_user_id text;
 
 alter table if exists intern_profiles
-    add column if not exists notes text not null default '';
+    alter column app_user_id type text using app_user_id::text;
 
 create index if not exists idx_intern_profiles_app_user_id on intern_profiles(app_user_id);
 
