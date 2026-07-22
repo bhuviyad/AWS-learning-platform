@@ -6,7 +6,7 @@ import { Alert, AlertDescription } from './ui/alert';
 import { Progress } from './ui/progress';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { hasLabBackendConfigured, startLabSession, stopLabSession, type LabIdentityContext } from '../lib/labApi';
-import { identityForLabSession, type AppUserIdentity, findInternProfileForUser } from '../lib/internProfiles';
+import { findInternProfileForUser, resolveLabIdentity, type AppUserIdentity } from '../lib/internProfiles';
 
 const LAB_SESSION_DURATION_MS = 15 * 60 * 1000;
 
@@ -50,9 +50,37 @@ export default function HandsOnLabPage({ currentUser }: HandsOnLabPageProps) {
   const [timeRemaining, setTimeRemaining] = useState<number>(0);
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [lastConsoleUrl, setLastConsoleUrl] = useState<string | null>(null);
+  const [labIdentity, setLabIdentity] = useState<LabIdentityContext | null>(null);
 
   const assignedProfile = findInternProfileForUser(currentUser.id, currentUser.email) || null;
-  const labIdentity: LabIdentityContext = identityForLabSession(currentUser);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadIdentity() {
+      try {
+        const resolved = await resolveLabIdentity(currentUser);
+        if (!cancelled) {
+          setLabIdentity(resolved);
+        }
+      } catch {
+        if (!cancelled) {
+          setLabIdentity({
+            id: currentUser.id,
+            name: currentUser.name,
+            email: currentUser.email,
+            awsAccountId: '483591406604',
+          });
+        }
+      }
+    }
+
+    void loadIdentity();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser]);
 
   // Timer countdown
   useEffect(() => {
@@ -76,21 +104,28 @@ export default function HandsOnLabPage({ currentUser }: HandsOnLabPageProps) {
       return;
     }
 
-    if (session.status !== 'inactive') {
+    if (session.status !== 'inactive' || !labIdentity) {
       return;
     }
 
     autoStartAttempted.current = true;
-    void handleStartLab();
-  }, []);
+    void handleStartLab(labIdentity);
+  }, [labIdentity, session.status]);
 
-  const handleStartLab = async () => {
+  const handleStartLab = async (identityOverride?: LabIdentityContext) => {
     setErrorMessage('');
     setSession({ ...session, status: 'starting' });
 
+    const identity = identityOverride || labIdentity || {
+      id: currentUser.id,
+      name: currentUser.name,
+      email: currentUser.email,
+      awsAccountId: '483591406604',
+    };
+
     if (hasLabBackendConfigured()) {
       try {
-        const response = await startLabSession(labIdentity);
+        const response = await startLabSession(identity);
         console.log('[lab] startLabSession response:', response);
         setLastConsoleUrl(response.loginUrl || response.consoleUrl || null);
         const startTime = Date.now();

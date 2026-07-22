@@ -24,16 +24,18 @@ Complete guide for setting up Supabase backend for the AWS Learning Lab Platform
 
 ### Run Migration SQL
 
-The project now includes a migration for the shared-account, per-intern identity model:
+The project now includes migrations for the shared-account, per-intern identity model:
 
 - `supabase/migrations/004_per_intern_identity_center.sql`
+- `supabase/migrations/005_intern_profiles_shared_fields.sql`
 
-It adds:
+They add:
 - `intern_profiles` for mapping app users to AWS identities
 - extended `lab_sessions` fields for identity/session tracking
 - `lab_resources` for tracking AWS resources created during a session
+- shared profile fields like `notes` and `app_user_id`
 
-You can apply it with `supabase db push` or paste the SQL into the editor if you prefer manual setup.
+You can apply them with `supabase db push` or paste the SQL into the editor if you prefer manual setup.
 
 Go to SQL Editor in Supabase Dashboard and run:
 
@@ -193,7 +195,16 @@ Customize confirmation and reset password emails:
 <p><a href="{{ .ConfirmationURL }}">Reset Password</a></p>
 ```
 
-## Step 4: Set Up Edge Functions
+## Step 4: Set Up the Backend Functions and Secrets
+
+The Render/local backend now also serves the intern profile API.
+
+Set these backend environment variables in Render (or your local mock environment) so the profiles page can persist data to Supabase:
+
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+
+Then continue with the lab start/stop function setup below.
 
 ### Initialize Supabase Locally
 

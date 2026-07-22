@@ -62,7 +62,14 @@ Use Render for the hosted backend / scheduler runner.
   - session tagging
   - `/cleanup-expired-labs`
   - the shared cleanup logic
+  - the intern profile API backed by Supabase
 
+### Add backend env vars
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `AWS_LAMBDA_EXECUTION_ROLE_ARN`
+- `LAB_ACCOUNT_ID`
+- `LAB_ACCOUNT_NAME`
 ### Add a cron job
 Create a Render cron job that runs every 5 minutes and calls:
 

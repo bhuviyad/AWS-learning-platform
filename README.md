@@ -116,9 +116,16 @@ A full-stack web application that provides an interactive learning platform for 
 Create a `.env.local` file in the root directory:
 
 ```env
-# Supabase Configuration
+# Supabase Configuration (frontend)
 VITE_SUPABASE_URL=your_supabase_project_url
 VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
+
+# Admin access
+VITE_ADMIN_EMAIL=admin@your-domain.com
+
+# Supabase Configuration (backend service role)
+SUPABASE_URL=your_supabase_project_url
+SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
 
 # AWS Configuration
 AWS_REGION=ap-south-1
@@ -134,7 +141,7 @@ AWS_SECRET_ACCESS_KEY=your_secret_key
 
 See [`docs/INTERN_IDENTITY_MODEL.md`](docs/INTERN_IDENTITY_MODEL.md) for the per-intern identity approach.
 
-Each intern is assigned an identity profile in Supabase and the platform uses automatic session tags to isolate resources inside the shared sandbox account.
+Each intern is assigned an identity profile in Supabase and the platform uses automatic session tags plus database-backed intern profiles to isolate resources inside the shared sandbox account.
 
 ## AWS Setup Guide
 
@@ -149,6 +156,7 @@ For the current shared-account approach, see:
 - Intern sandbox role: `interns-sandbox-role`
 - Lambda execution role: `interns-lambda-execution-role`
 - Per-intern identities mapped in Supabase
+- Database-backed intern profiles
 - Session-tagged cleanup for expired resources
 
 ### What interns do
@@ -156,7 +164,8 @@ For the current shared-account approach, see:
 2. Open the AWS sandbox
 3. Create resources in the shared account
 4. Use the shared Lambda execution role shown in the lab session
-5. Let the automatic cleanup remove expired resources when the session ends
+5. Save intern profile details in the Interns tab
+6. Let the automatic cleanup remove expired resources when the session ends
 
 ### What the platform does
 - tracks each intern profile

@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { STSClient, AssumeRoleCommand } = require('@aws-sdk/client-sts');
 const { LambdaClient } = require('@aws-sdk/client-lambda');
+const { createClient } = require('@supabase/supabase-js');
 const { cleanupTaggedLambdaFunctions } = require('../lambdaCleanup.cjs');
 
 const app = express();
@@ -64,6 +65,104 @@ function createLambdaClientFromBackend() {
       ...(backend.sessionToken ? { sessionToken: backend.sessionToken } : {}),
     },
   });
+}
+
+function getSupabaseAdminClient() {
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE || '';
+
+  if (!supabaseUrl || !serviceRoleKey) {
+    return null;
+  }
+
+  return createClient(supabaseUrl, serviceRoleKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
+}
+
+function mapInternProfileRow(row) {
+  return {
+    id: row.id,
+    appUserId: row.app_user_id || row.appUserId || row.app_user_email || '',
+    appUserName: row.display_name || row.appUserName || 'Intern',
+    appUserEmail: row.app_user_email || row.appUserEmail || '',
+    awsIdentityCenterUsername: row.aws_identity_center_username || row.awsIdentityCenterUsername || '',
+    awsIdentityCenterEmail: row.aws_identity_center_email || row.awsIdentityCenterEmail || '',
+    awsAccountId: row.aws_account_id || row.awsAccountId || process.env.LAB_ACCOUNT_ID || '',
+    permissionSetName: row.permission_set_name || row.permissionSetName || 'LearningLabSandbox',
+    status: row.status || 'active',
+    notes: row.notes || '',
+    createdAt: row.created_at || row.createdAt || '',
+    updatedAt: row.updated_at || row.updatedAt || '',
+  };
+}
+
+function mapInternProfilePayload(profile) {
+  return {
+    id: profile.id,
+    app_user_id: profile.appUserId || '',
+    app_user_email: profile.appUserEmail,
+    display_name: profile.appUserName,
+    aws_identity_center_username: profile.awsIdentityCenterUsername || '',
+    aws_identity_center_email: profile.awsIdentityCenterEmail || '',
+    aws_account_id: profile.awsAccountId || process.env.LAB_ACCOUNT_ID || '',
+    permission_set_name: profile.permissionSetName || 'LearningLabSandbox',
+    status: profile.status || 'active',
+    notes: profile.notes || '',
+  };
+}
+
+function isSupabaseConfigured() {
+  return Boolean(getSupabaseAdminClient());
+}
+
+async function listInternProfilesFromDb() {
+  const client = getSupabaseAdminClient();
+  if (!client) {
+    throw new Error('Supabase is not configured');
+  }
+
+  const { data, error } = await client
+    .from('intern_profiles')
+    .select('*')
+    .order('display_name', { ascending: true });
+
+  if (error) throw error;
+  return (data || []).map(mapInternProfileRow);
+}
+
+async function saveInternProfileToDb(profile) {
+  const client = getSupabaseAdminClient();
+  if (!client) {
+    throw new Error('Supabase is not configured');
+  }
+
+  const payload = mapInternProfilePayload(profile);
+  const { data, error } = await client
+    .from('intern_profiles')
+    .upsert(payload, { onConflict: 'app_user_email' })
+    .select('*')
+    .single();
+
+  if (error) throw error;
+  return mapInternProfileRow(data);
+}
+
+async function deleteInternProfileFromDb(profileId) {
+  const client = getSupabaseAdminClient();
+  if (!client) {
+    throw new Error('Supabase is not configured');
+  }
+
+  const { error } = await client
+    .from('intern_profiles')
+    .delete()
+    .eq('id', profileId);
+
+  if (error) throw error;
 }
 
 async function assumeSandboxRole(sessionId, identity) {
@@ -217,6 +316,60 @@ app.post('/cleanup-expired-labs', async (_req, res) => {
   } catch (error) {
     console.error('[cleanup] failed ->', error.message);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/intern-profiles', async (_req, res) => {
+  try {
+    const profiles = await listInternProfilesFromDb();
+    res.json({ profiles });
+  } catch (error) {
+    console.error('[intern-profiles] list error ->', error.message);
+    res.status(503).json({ error: error.message });
+  }
+});
+
+app.post('/intern-profiles', async (req, res) => {
+  const incoming = req.body && req.body.profile ? req.body.profile : req.body || {};
+
+  try {
+    const profile = {
+      id: incoming.id || '',
+      appUserId: incoming.appUserId || '',
+      appUserName: incoming.appUserName || incoming.display_name || 'Intern',
+      appUserEmail: incoming.appUserEmail || incoming.app_user_email || '',
+      awsIdentityCenterUsername: incoming.awsIdentityCenterUsername || incoming.aws_identity_center_username || '',
+      awsIdentityCenterEmail: incoming.awsIdentityCenterEmail || incoming.aws_identity_center_email || '',
+      awsAccountId: incoming.awsAccountId || incoming.aws_account_id || process.env.LAB_ACCOUNT_ID || '',
+      permissionSetName: incoming.permissionSetName || incoming.permission_set_name || 'LearningLabSandbox',
+      status: incoming.status || 'active',
+      notes: incoming.notes || '',
+    };
+
+    if (!profile.appUserEmail) {
+      return res.status(400).json({ error: 'appUserEmail is required' });
+    }
+
+    const saved = await saveInternProfileToDb(profile);
+    res.json({ profile: saved });
+  } catch (error) {
+    console.error('[intern-profiles] save error ->', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/intern-profiles/:id', async (req, res) => {
+  const profileId = String(req.params.id || '').trim();
+  if (!profileId) {
+    return res.status(400).json({ error: 'profile id is required' });
+  }
+
+  try {
+    await deleteInternProfileFromDb(profileId);
+    res.json({ success: true, profileId });
+  } catch (error) {
+    console.error('[intern-profiles] delete error ->', error.message);
+    res.status(500).json({ error: error.message });
   }
 });
 
