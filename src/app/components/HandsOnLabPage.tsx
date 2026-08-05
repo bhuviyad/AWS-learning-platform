@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { Play, Square, ExternalLink, Clock, Server, Database, Shield, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
@@ -32,9 +32,10 @@ interface HandsOnLabPageProps {
   currentUser: AppUserIdentity;
 }
 
-export default function HandsOnLabPage({ currentUser }: HandsOnLabPageProps) {
-  const autoStartAttempted = useRef(false);
-  const [session, setSession] = useState<LabSession>({
+const LAB_SESSION_STORAGE_PREFIX = 'aws-learning-lab-active-session';
+
+function createInactiveSession(): LabSession {
+  return {
     id: '',
     status: 'inactive',
     startTime: null,
@@ -44,8 +45,42 @@ export default function HandsOnLabPage({ currentUser }: HandsOnLabPageProps) {
     lambdaExecutionRoleArn: null,
     expiresAt: null,
     awsConsoleUrl: null,
+    loginUrl: null,
     credentials: null,
-  });
+  };
+}
+
+function getSessionStorageKey(user: AppUserIdentity) {
+  return `${LAB_SESSION_STORAGE_PREFIX}:${user.id}:${user.email.trim().toLowerCase()}`;
+}
+
+function restoreActiveSession(user: AppUserIdentity): LabSession {
+  if (typeof window === 'undefined') return createInactiveSession();
+
+  const storageKey = getSessionStorageKey(user);
+  const raw = window.sessionStorage.getItem(storageKey);
+  if (!raw) return createInactiveSession();
+
+  try {
+    const stored = JSON.parse(raw) as LabSession;
+    if (!stored.id || !stored.endTime || stored.endTime <= Date.now()) {
+      window.sessionStorage.removeItem(storageKey);
+      return createInactiveSession();
+    }
+
+    return {
+      ...createInactiveSession(),
+      ...stored,
+      status: 'active',
+    };
+  } catch {
+    window.sessionStorage.removeItem(storageKey);
+    return createInactiveSession();
+  }
+}
+
+export default function HandsOnLabPage({ currentUser }: HandsOnLabPageProps) {
+  const [session, setSession] = useState<LabSession>(() => restoreActiveSession(currentUser));
 
   const [timeRemaining, setTimeRemaining] = useState<number>(0);
   const [errorMessage, setErrorMessage] = useState<string>('');
@@ -100,17 +135,18 @@ export default function HandsOnLabPage({ currentUser }: HandsOnLabPageProps) {
   }, [session]);
 
   useEffect(() => {
-    if (autoStartAttempted.current) {
+    const storageKey = getSessionStorageKey(currentUser);
+
+    if ((session.status === 'active' || session.status === 'stopping') && session.id && session.endTime && session.endTime > Date.now()) {
+      window.sessionStorage.setItem(storageKey, JSON.stringify({ ...session, credentials: null }));
+      setTimeRemaining(Math.max(0, session.endTime - Date.now()));
       return;
     }
 
-    if (session.status !== 'inactive' || !labIdentity) {
-      return;
+    if (session.status === 'inactive' || session.status === 'expired') {
+      window.sessionStorage.removeItem(storageKey);
     }
-
-    autoStartAttempted.current = true;
-    void handleStartLab(labIdentity);
-  }, [labIdentity, session.status]);
+  }, [currentUser, session]);
 
   const handleStartLab = async (identityOverride?: LabIdentityContext) => {
     setErrorMessage('');
@@ -129,7 +165,9 @@ export default function HandsOnLabPage({ currentUser }: HandsOnLabPageProps) {
         console.log('[lab] startLabSession response:', response);
         setLastConsoleUrl(response.loginUrl || response.consoleUrl || null);
         const startTime = Date.now();
-        const endTime = startTime + LAB_SESSION_DURATION_MS;
+        const expiresAt = response.expiresAt || response.credentials.expiration || null;
+        const parsedEndTime = expiresAt ? Date.parse(expiresAt) : Number.NaN;
+        const endTime = Number.isFinite(parsedEndTime) ? parsedEndTime : startTime + LAB_SESSION_DURATION_MS;
 
         setSession({
           id: response.sessionId,
@@ -139,7 +177,7 @@ export default function HandsOnLabPage({ currentUser }: HandsOnLabPageProps) {
           accountName: response.accountName || null,
           accountId: response.accountId || null,
           lambdaExecutionRoleArn: response.lambdaExecutionRoleArn || null,
-          expiresAt: response.expiresAt || response.credentials.expiration || null,
+          expiresAt,
           awsConsoleUrl: response.consoleUrl,
           loginUrl: (response as any).loginUrl || null,
           credentials: {
@@ -148,38 +186,17 @@ export default function HandsOnLabPage({ currentUser }: HandsOnLabPageProps) {
             sessionToken: response.credentials.sessionToken,
           },
         });
-        setTimeRemaining(LAB_SESSION_DURATION_MS);
+        setTimeRemaining(Math.max(0, endTime - Date.now()));
         return;
       } catch (error) {
         setErrorMessage(error instanceof Error ? error.message : 'Unable to start lab session.');
-        setSession({
-          id: '',
-          status: 'inactive',
-          startTime: null,
-          endTime: null,
-          accountName: null,
-          accountId: null,
-          lambdaExecutionRoleArn: null,
-          expiresAt: null,
-          awsConsoleUrl: null,
-          credentials: null,
-        });
+        setSession(createInactiveSession());
         return;
       }
     }
 
     setErrorMessage('AWS Lab credentials will be available once the backend AWS credentials and role information are configured.');
-    setSession({
-      id: '',
-      status: 'inactive',
-      startTime: null,
-      endTime: null,
-      accountName: null,
-      accountId: null,
-      lambdaExecutionRoleArn: null,
-      awsConsoleUrl: null,
-      credentials: null,
-    });
+    setSession(createInactiveSession());
   };
 
   const handleStopLab = async () => {
@@ -194,17 +211,8 @@ export default function HandsOnLabPage({ currentUser }: HandsOnLabPageProps) {
     }
 
     setTimeout(() => {
-      setSession({
-        id: '',
-        status: 'inactive',
-        startTime: null,
-        endTime: null,
-        accountName: null,
-        accountId: null,
-        lambdaExecutionRoleArn: null,
-        awsConsoleUrl: null,
-        credentials: null,
-      });
+      setSession(createInactiveSession());
+      setLastConsoleUrl(null);
       setTimeRemaining(0);
     }, 1500);
   };
@@ -216,17 +224,9 @@ export default function HandsOnLabPage({ currentUser }: HandsOnLabPageProps) {
       stopLabSession(sessionId).catch(() => {});
     }
     setTimeout(() => {
-      setSession({
-        id: '',
-        status: 'inactive',
-        startTime: null,
-        endTime: null,
-        accountName: null,
-        accountId: null,
-        lambdaExecutionRoleArn: null,
-        awsConsoleUrl: null,
-        credentials: null,
-      });
+      setSession(createInactiveSession());
+      setLastConsoleUrl(null);
+      setTimeRemaining(0);
     }, 5000);
   };
 
@@ -253,6 +253,7 @@ export default function HandsOnLabPage({ currentUser }: HandsOnLabPageProps) {
   const timeProgress = session.endTime && session.startTime
     ? ((Date.now() - session.startTime) / (session.endTime - session.startTime)) * 100
     : 0;
+  const activeConsoleUrl = session.loginUrl || session.awsConsoleUrl || lastConsoleUrl;
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -273,11 +274,11 @@ export default function HandsOnLabPage({ currentUser }: HandsOnLabPageProps) {
         </Alert>
       )}
 
-      {session.status === 'active' && !session.credentials && (
+      {session.status === 'active' && !activeConsoleUrl && (
         <Alert className="border-orange-200 bg-orange-50">
           <AlertCircle className="h-4 w-4 text-orange-600" />
           <AlertDescription className="text-orange-800">
-            Lab session started, but real AWS credentials are unavailable in local demo mode.
+            Lab session started, but the AWS Console link is unavailable.
           </AlertDescription>
         </Alert>
       )}
@@ -378,7 +379,7 @@ export default function HandsOnLabPage({ currentUser }: HandsOnLabPageProps) {
 
         <div className="flex justify-center gap-4 mb-6">
           {session.status === 'inactive' || session.status === 'expired' ? (
-            <Button onClick={handleStartLab} className="bg-orange-600 hover:bg-orange-700">
+            <Button onClick={() => void handleStartLab()} className="bg-orange-600 hover:bg-orange-700">
               <Play className="w-4 h-4 mr-2" />
               Start Lab
             </Button>
@@ -395,11 +396,11 @@ export default function HandsOnLabPage({ currentUser }: HandsOnLabPageProps) {
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="font-semibold text-slate-900">AWS Console Access</h3>
-                <p className="text-sm text-slate-600">Your temporary credentials are ready</p>
+                <p className="text-sm text-slate-600">Your temporary AWS Console session is ready</p>
               </div>
-              {lastConsoleUrl && (
+              {activeConsoleUrl && (
                 <a
-                  href={lastConsoleUrl}
+                  href={activeConsoleUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-orange-600 hover:text-orange-700"
