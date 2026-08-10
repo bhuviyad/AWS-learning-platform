@@ -285,6 +285,7 @@ async function saveLabSessionToDb(sessionId, identity, startTime, endTime) {
 
   const payload = {
     session_tag: sessionId,
+    app_user_id: identity.userId || '',
     status: 'active',
     start_time: new Date(startTime).toISOString(),
     end_time: new Date(endTime).toISOString(),
