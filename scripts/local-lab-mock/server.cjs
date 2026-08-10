@@ -4,8 +4,11 @@ const fs = require('fs');
 const path = require('path');
 const { STSClient, AssumeRoleCommand } = require('@aws-sdk/client-sts');
 const { LambdaClient } = require('@aws-sdk/client-lambda');
+const { EventBridgeClient } = require('@aws-sdk/client-eventbridge');
+const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+const { S3Client } = require('@aws-sdk/client-s3');
 const { createClient } = require('@supabase/supabase-js');
-const { cleanupTaggedLambdaFunctions } = require('../lambdaCleanup.cjs');
+const { cleanupTaggedSandboxResources } = require('../lambdaCleanup.cjs');
 
 const app = express();
 app.use(cors());
@@ -65,6 +68,57 @@ function createLambdaClientFromBackend() {
       ...(backend.sessionToken ? { sessionToken: backend.sessionToken } : {}),
     },
   });
+}
+
+function createEventBridgeClientFromBackend() {
+  const backend = getBackendCredentials();
+  if (!backend) return null;
+
+  return new EventBridgeClient({
+    region: backend.region,
+    credentials: {
+      accessKeyId: backend.accessKeyId,
+      secretAccessKey: backend.secretAccessKey,
+      ...(backend.sessionToken ? { sessionToken: backend.sessionToken } : {}),
+    },
+  });
+}
+
+function createDynamoDbClientFromBackend() {
+  const backend = getBackendCredentials();
+  if (!backend) return null;
+
+  return new DynamoDBClient({
+    region: backend.region,
+    credentials: {
+      accessKeyId: backend.accessKeyId,
+      secretAccessKey: backend.secretAccessKey,
+      ...(backend.sessionToken ? { sessionToken: backend.sessionToken } : {}),
+    },
+  });
+}
+
+function createS3ClientFromBackend() {
+  const backend = getBackendCredentials();
+  if (!backend) return null;
+
+  return new S3Client({
+    region: backend.region,
+    credentials: {
+      accessKeyId: backend.accessKeyId,
+      secretAccessKey: backend.secretAccessKey,
+      ...(backend.sessionToken ? { sessionToken: backend.sessionToken } : {}),
+    },
+  });
+}
+
+function createCleanupClientsFromBackend() {
+  return {
+    lambda: createLambdaClientFromBackend(),
+    eventBridge: createEventBridgeClientFromBackend(),
+    dynamodb: createDynamoDbClientFromBackend(),
+    s3: createS3ClientFromBackend(),
+  };
 }
 
 function getSupabaseAdminClient() {
@@ -225,6 +279,58 @@ async function saveLearningProgressToDb(input) {
   return mapLearningProgressRow(data);
 }
 
+async function saveLabSessionToDb(sessionId, identity, startTime, endTime) {
+  const client = getSupabaseAdminClient();
+  if (!client) return;
+
+  const payload = {
+    session_tag: sessionId,
+    status: 'active',
+    start_time: new Date(startTime).toISOString(),
+    end_time: new Date(endTime).toISOString(),
+    expiration_time: new Date(endTime).toISOString(),
+    cleanup_state: 'scheduled',
+    intern_email: identity.userEmail || '',
+    intern_name: identity.userName || '',
+    aws_identity_center_username: identity.awsIdentityCenterUsername || '',
+    aws_identity_center_email: identity.awsIdentityCenterEmail || '',
+    aws_account_id: identity.awsAccountId || process.env.LAB_ACCOUNT_ID || '',
+  };
+
+  const { error } = await client
+    .from('lab_sessions')
+    .upsert(payload, { onConflict: 'session_tag' });
+
+  if (error) throw error;
+}
+
+async function updateLabSessionCleanupState(sessionId, status, cleanupState) {
+  const client = getSupabaseAdminClient();
+  if (!client) return;
+
+  const { error } = await client
+    .from('lab_sessions')
+    .update({ status, cleanup_state: cleanupState })
+    .eq('session_tag', sessionId);
+
+  if (error) throw error;
+}
+
+async function listExpiredLabSessionIds() {
+  const client = getSupabaseAdminClient();
+  if (!client) return [];
+
+  const { data, error } = await client
+    .from('lab_sessions')
+    .select('session_tag')
+    .lte('end_time', new Date().toISOString())
+    .neq('cleanup_state', 'deleted')
+    .not('session_tag', 'is', null);
+
+  if (error) throw error;
+  return (data || []).map((row) => row.session_tag).filter(Boolean);
+}
+
 async function assumeSandboxRole(sessionId, identity) {
   const backend = getBackendCredentials();
   if (!backend || !process.env.AWS_LAB_ROLE_ARN) {
@@ -290,21 +396,44 @@ async function buildLoginUrl(credentials, destination) {
 }
 
 async function cleanupSessionResources(sessionId, mode = 'manual') {
-  const client = createLambdaClientFromBackend();
-  if (!client) {
-    return { inspected: 0, deleted: 0, skipped: 0, errors: ['Backend AWS credentials are not configured'] };
+  const clients = createCleanupClientsFromBackend();
+  if (!clients.lambda && !clients.eventBridge && !clients.dynamodb && !clients.s3) {
+    return { errors: ['Backend AWS credentials are not configured'] };
   }
 
-  return cleanupTaggedLambdaFunctions(client, { sessionId, mode });
+  return cleanupTaggedSandboxResources(clients, { sessionId, mode });
 }
 
 async function cleanupExpiredResources() {
-  const client = createLambdaClientFromBackend();
-  if (!client) {
-    return { inspected: 0, deleted: 0, skipped: 0, errors: ['Backend AWS credentials are not configured'] };
+  const clients = createCleanupClientsFromBackend();
+  if (!clients.lambda && !clients.eventBridge && !clients.dynamodb && !clients.s3) {
+    return { errors: ['Backend AWS credentials are not configured'] };
   }
 
-  return cleanupTaggedLambdaFunctions(client, { mode: 'scheduled' });
+  let expiredSessionIds = [];
+  try {
+    expiredSessionIds = await listExpiredLabSessionIds();
+  } catch (error) {
+    console.warn('[cleanup] unable to load expired sessions ->', error.message);
+  }
+
+  const sessions = {};
+  for (const sessionId of expiredSessionIds) {
+    try {
+      const cleanup = await cleanupTaggedSandboxResources(clients, { sessionId, mode: 'manual' });
+      sessions[sessionId] = cleanup;
+      const cleanupState = cleanup.errors.length > 0 ? 'failed' : 'deleted';
+      await updateLabSessionCleanupState(sessionId, 'expired', cleanupState).catch((error) => {
+        console.warn(`[cleanup] unable to update session ${sessionId} ->`, error.message);
+      });
+    } catch (error) {
+      sessions[sessionId] = { errors: [error.message] };
+      await updateLabSessionCleanupState(sessionId, 'expired', 'failed').catch(() => {});
+    }
+  }
+
+  const taggedFallback = await cleanupTaggedSandboxResources(clients, { mode: 'scheduled' });
+  return { sessions, taggedFallback, errors: taggedFallback.errors };
 }
 
 app.post('/start-lab', async (req, res) => {
@@ -329,7 +458,14 @@ app.post('/start-lab', async (req, res) => {
     const credentials = await assumeSandboxRole(sessionId, identity);
     const loginUrl = destination ? await buildLoginUrl(credentials, destination) : null;
 
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    const startTime = Date.now();
+    const credentialEndTime = credentials.expiration ? Date.parse(credentials.expiration) : Number.NaN;
+    const endTime = Number.isFinite(credentialEndTime) ? credentialEndTime : startTime + 15 * 60 * 1000;
+    const expiresAt = new Date(endTime).toISOString();
+
+    await saveLabSessionToDb(sessionId, identity, startTime, endTime).catch((error) => {
+      console.warn('[lab] unable to persist session ->', error.message);
+    });
 
     res.json({
       sessionId,
@@ -361,9 +497,15 @@ app.post('/stop-lab', async (req, res) => {
   console.log('[lab] stop-lab cleanup ->', cleanedSessionId);
 
   try {
+    await updateLabSessionCleanupState(cleanedSessionId, 'stopping', 'scheduled').catch(() => {});
     const cleanup = await cleanupSessionResources(cleanedSessionId, 'manual');
+    const cleanupState = cleanup.errors.length > 0 ? 'failed' : 'deleted';
+    await updateLabSessionCleanupState(cleanedSessionId, 'expired', cleanupState).catch((error) => {
+      console.warn('[cleanup] unable to update session state ->', error.message);
+    });
     res.json({ success: true, sessionId: cleanedSessionId, cleanup });
   } catch (error) {
+    await updateLabSessionCleanupState(cleanedSessionId, 'expired', 'failed').catch(() => {});
     console.error('[cleanup] failed ->', error.message);
     res.status(500).json({ success: false, error: error.message });
   }
