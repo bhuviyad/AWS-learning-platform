@@ -29,6 +29,9 @@ The project now includes migrations for the shared-account, per-intern identity 
 - `supabase/migrations/004_per_intern_identity_center.sql`
 - `supabase/migrations/005_intern_profiles_shared_fields.sql`
 - `supabase/migrations/006_learning_progress.sql`
+- `supabase/migrations/007_lab_session_cleanup_tracking.sql`
+- `supabase/migrations/008_local_user_lab_sessions.sql`
+- `supabase/migrations/009_admin_operations_dashboard.sql`
 
 They add:
 - `intern_profiles` for mapping app users to AWS identities
@@ -36,6 +39,7 @@ They add:
 - `lab_resources` for tracking AWS resources created during a session
 - shared profile fields like `notes` and `app_user_id`
 - `learning_progress` for per-user lesson completion tracking
+- `user_presence` for admin dashboard login, online, page, and current-lesson reporting
 
 You can apply them with `supabase db push` or paste the SQL into the editor if you prefer manual setup.
 

@@ -1,300 +1,155 @@
-import { useEffect, useState } from 'react';
-import { ShieldAlert } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { LayoutDashboard, RefreshCw, ShieldAlert, Users, FlaskConical, BookOpenCheck } from 'lucide-react';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
-import { Input } from './ui/input';
-import { Label } from './ui/label';
-import { Textarea } from './ui/textarea';
-import { deleteInternProfile, ensureInternProfileForUser, identityForLabSession, listInternProfiles, upsertInternProfile, type AppUserIdentity, type InternProfile, type InternProfileStatus } from '../lib/internProfiles';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { isAdminEmail } from '../lib/admin';
+import { fetchAdminDashboard, type DashboardData } from '../lib/adminDashboardApi';
+import type { AppUserIdentity } from '../lib/internProfiles';
+import DashboardOverview from './admin/DashboardOverview';
+import SessionsTable from './admin/SessionsTable';
+import ProgressDashboard from './admin/ProgressDashboard';
+import ProfileManagement from './admin/ProfileManagement';
 
 interface InternsPageProps {
   currentUser: AppUserIdentity;
 }
 
-const emptyForm = (user?: AppUserIdentity) => ({
-  id: '',
-  appUserId: user?.id || '',
-  appUserName: user?.name || '',
-  appUserEmail: user?.email || '',
-  awsIdentityCenterUsername: user?.email?.split('@')[0] || '',
-  awsIdentityCenterEmail: user?.email || '',
-  awsAccountId: '483591406604',
-  permissionSetName: 'LearningLabSandbox',
-  status: 'active' as InternProfileStatus,
-  notes: '',
-});
+function formatIst(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return new Intl.DateTimeFormat('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    dateStyle: 'medium',
+    timeStyle: 'medium',
+  }).format(date);
+}
 
 export default function InternsPage({ currentUser }: InternsPageProps) {
   const adminAllowed = isAdminEmail(currentUser.email);
-  const [profiles, setProfiles] = useState<InternProfile[]>([]);
-  const [selectedProfileId, setSelectedProfileId] = useState<string>('');
-  const [form, setForm] = useState(emptyForm(currentUser));
-  const [isLoading, setIsLoading] = useState(true);
+  const [dashboard, setDashboard] = useState<DashboardData | null>(null);
+  const [isLoading, setIsLoading] = useState(adminAllowed);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
 
-  useEffect(() => {
-    if (!adminAllowed) {
+  const loadDashboard = useCallback(async (background = false) => {
+    if (!adminAllowed) return;
+
+    if (background) setIsRefreshing(true);
+    else setIsLoading(true);
+    setErrorMessage('');
+
+    try {
+      const next = await fetchAdminDashboard(currentUser.email);
+      setDashboard(next);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Unable to load the admin dashboard.');
+    } finally {
       setIsLoading(false);
-      return;
+      setIsRefreshing(false);
     }
+  }, [adminAllowed, currentUser.email]);
 
-    let cancelled = false;
-
-    async function loadProfiles() {
-      setIsLoading(true);
-      setErrorMessage('');
-
-      try {
-        const ensured = await ensureInternProfileForUser(currentUser);
-        const nextProfiles = await listInternProfiles();
-
-        if (cancelled) return;
-
-        setProfiles(nextProfiles);
-        setSelectedProfileId((current) => current || ensured.id || nextProfiles[0]?.id || '');
-
-        const selected = nextProfiles.find((profile) => profile.id === ensured.id) || nextProfiles[0] || ensured;
-        setForm({ ...emptyForm(currentUser), ...selected });
-      } catch (error) {
-        if (cancelled) return;
-        setErrorMessage(error instanceof Error ? error.message : 'Unable to load intern profiles.');
-        const fallback = await listInternProfiles();
-        setProfiles(fallback);
-        const selected = fallback[0] || null;
-        setSelectedProfileId(selected?.id || '');
-        setForm(selected ? { ...emptyForm(currentUser), ...selected } : emptyForm(currentUser));
-      } finally {
-        if (!cancelled) {
-          setIsLoading(false);
-        }
-      }
-    }
-
-    void loadProfiles();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [currentUser, adminAllowed]);
+  useEffect(() => {
+    if (!adminAllowed) return;
+    void loadDashboard();
+    const interval = window.setInterval(() => void loadDashboard(true), 30_000);
+    return () => window.clearInterval(interval);
+  }, [adminAllowed, loadDashboard]);
 
   if (!adminAllowed) {
     return (
-      <Card className="max-w-2xl mx-auto">
+      <Card className="mx-auto max-w-2xl">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <ShieldAlert className="w-5 h-5 text-orange-600" />
+            <ShieldAlert className="h-5 w-5 text-orange-600" />
             Admin only
           </CardTitle>
-          <CardDescription>
-            This page is restricted to the admin account.
-          </CardDescription>
+          <CardDescription>This dashboard is restricted to the configured admin account.</CardDescription>
         </CardHeader>
-        <CardContent className="text-sm text-slate-600 space-y-2">
-          <p>Intern profile management is hidden for non-admin users.</p>
-          <p>If you should have access, sign in with the admin account and set <span className="font-mono">VITE_ADMIN_EMAIL</span> to that email.</p>
+        <CardContent className="space-y-2 text-sm text-slate-600">
+          <p>Intern sessions, progress, presence, and identity management are hidden from regular interns.</p>
+          <p>If you should have access, sign in with the email configured in <span className="font-mono">VITE_ADMIN_EMAIL</span>.</p>
         </CardContent>
       </Card>
     );
   }
 
-  const loadProfile = (profile: InternProfile) => {
-    setSelectedProfileId(profile.id);
-    setForm({ ...emptyForm(currentUser), ...profile });
-  };
-
-  const handleSave = async () => {
-    setErrorMessage('');
-
-    try {
-      const saved = await upsertInternProfile({
-        ...form,
-        appUserId: form.appUserId || currentUser.id,
-        appUserName: form.appUserName || currentUser.name,
-        appUserEmail: form.appUserEmail || currentUser.email,
-      });
-
-      const next = await listInternProfiles();
-      setProfiles(next);
-      setSelectedProfileId(saved.id);
-      setForm({ ...saved });
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Unable to save intern profile.');
-    }
-  };
-
-  const handleNew = () => {
-    const draft = emptyForm(currentUser);
-    setSelectedProfileId('');
-    setForm(draft);
-  };
-
-  const handleDelete = async () => {
-    if (!selectedProfileId) return;
-    setErrorMessage('');
-
-    try {
-      await deleteInternProfile(selectedProfileId);
-      const next = await listInternProfiles();
-      setProfiles(next);
-      const fallback = next[0] || null;
-      setSelectedProfileId(fallback?.id || '');
-      setForm(fallback ? { ...fallback } : emptyForm(currentUser));
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Unable to delete intern profile.');
-    }
-  };
-
-  const sessionIdentity = identityForLabSession(currentUser);
-
   return (
     <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Intern identity mapping</CardTitle>
-          <CardDescription>
-            Assign AWS Identity Center details to each intern in the shared sandbox account.
-          </CardDescription>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-2xl font-semibold text-slate-900">Admin operations</h1>
+            <Badge className="bg-orange-100 text-orange-700 hover:bg-orange-100">Admin only</Badge>
+          </div>
+          <p className="mt-1 text-sm text-slate-600">
+            Monitor platform presence, AWS lab sessions, cleanup health, learning progress, and identity assignments.
+          </p>
+          {dashboard && (
+            <p className="mt-1 text-xs text-slate-500">Last updated {formatIst(dashboard.generatedAt)} IST · Auto-refreshes every 30 seconds</p>
+          )}
+        </div>
+        <Button variant="outline" onClick={() => void loadDashboard(true)} disabled={isLoading || isRefreshing}>
+          <RefreshCw className={`mr-2 h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+          Refresh
+        </Button>
+      </div>
+
+      {errorMessage && (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+          <p className="font-medium">Dashboard data could not be loaded.</p>
+          <p className="mt-1">{errorMessage}</p>
+          <p className="mt-2 text-xs">Check the Render backend environment variables <span className="font-mono">ADMIN_EMAIL</span>, <span className="font-mono">SUPABASE_URL</span>, and <span className="font-mono">SUPABASE_SERVICE_ROLE_KEY</span>.</p>
+        </div>
+      )}
+
+      {isLoading && !dashboard ? (
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+          {Array.from({ length: 5 }).map((_, index) => (
+            <Card key={index}><CardContent className="h-32 animate-pulse bg-slate-50" /></Card>
+          ))}
+        </div>
+      ) : dashboard ? (
+        <Tabs defaultValue="overview" className="space-y-4">
+          <TabsList className="h-auto max-w-full flex-wrap justify-start">
+            <TabsTrigger value="overview"><LayoutDashboard className="h-4 w-4" />Overview</TabsTrigger>
+            <TabsTrigger value="sessions"><FlaskConical className="h-4 w-4" />Sessions</TabsTrigger>
+            <TabsTrigger value="progress"><BookOpenCheck className="h-4 w-4" />Progress</TabsTrigger>
+            <TabsTrigger value="profiles"><Users className="h-4 w-4" />Profiles</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="overview">
+            <DashboardOverview data={dashboard} />
+          </TabsContent>
+
+          <TabsContent value="sessions">
+            <SessionsTable sessions={dashboard.sessions} />
+          </TabsContent>
+
+          <TabsContent value="progress">
+            <ProgressDashboard rows={dashboard.progress} />
+          </TabsContent>
+
+          <TabsContent value="profiles">
+            <ProfileManagement currentUser={currentUser} />
+          </TabsContent>
+        </Tabs>
+      ) : !errorMessage ? (
+        <Card>
+          <CardContent className="p-8 text-center text-sm text-slate-500">No dashboard data is available yet.</CardContent>
+        </Card>
+      ) : null}
+
+      <Card className="border-blue-200 bg-blue-50/60">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base text-blue-900">What “activity” means</CardTitle>
         </CardHeader>
-        <CardContent className="grid gap-4 md:grid-cols-2">
-          <div className="space-y-2 text-sm text-slate-600">
-            <div className="flex items-center gap-2">
-              <span className="font-medium text-slate-900">Current user:</span>
-              <span>{currentUser.name}</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="font-medium text-slate-900">Email:</span>
-              <span>{currentUser.email}</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="font-medium text-slate-900">Assigned AWS username:</span>
-              <span>{sessionIdentity.awsIdentityCenterUsername || '—'}</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="font-medium text-slate-900">Permission set:</span>
-              <span>{sessionIdentity.permissionSetName || '—'}</span>
-            </div>
-          </div>
-          <div className="space-y-2">
-            <div className="flex flex-wrap gap-2">
-              <Badge variant="outline">Account: {sessionIdentity.awsAccountId}</Badge>
-              <Badge variant="outline">Shared sandbox</Badge>
-              <Badge variant="outline">Supabase-backed</Badge>
-            </div>
-            <p className="text-sm text-slate-600">
-              Use this page to keep each intern mapped to the correct AWS identity-center username, email, and permission set.
-              These profiles now save to the database and are shared across browsers.
-            </p>
-          </div>
+        <CardContent className="text-sm text-blue-800">
+          This dashboard reports platform login presence, current page/lesson, stored learning completion, and lab-session lifecycle. Exact AWS Console actions require CloudTrail integration and are not inferred here.
         </CardContent>
       </Card>
-
-      <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
-        <Card>
-          <CardHeader>
-            <CardTitle>Intern profiles</CardTitle>
-            <CardDescription>
-              Select an existing intern profile or create a new assignment.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="flex gap-2">
-              <Button onClick={handleNew} variant="outline">New profile</Button>
-              <Button onClick={handleSave} className="bg-orange-600 hover:bg-orange-700" disabled={isLoading}>Save to database</Button>
-            </div>
-
-            {errorMessage && (
-              <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-                {errorMessage}
-              </div>
-            )}
-
-            <div className="space-y-3 max-h-[480px] overflow-auto pr-1">
-              {isLoading && (
-                <div className="rounded-lg border border-dashed border-slate-300 p-4 text-sm text-slate-500">
-                  Loading profiles...
-                </div>
-              )}
-
-              {!isLoading && profiles.length === 0 && (
-                <div className="rounded-lg border border-dashed border-slate-300 p-4 text-sm text-slate-500">
-                  No intern profiles yet. Create one to assign AWS identity details.
-                </div>
-              )}
-
-              {profiles.map((profile) => (
-                <button
-                  key={profile.id}
-                  onClick={() => loadProfile(profile)}
-                  className={`w-full rounded-xl border p-4 text-left transition-colors ${selectedProfileId === profile.id ? 'border-orange-500 bg-orange-50' : 'border-slate-200 bg-white hover:border-slate-300'}`}
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <h4 className="font-semibold text-slate-900">{profile.appUserName}</h4>
-                      <p className="text-sm text-slate-600">{profile.appUserEmail}</p>
-                    </div>
-                    <Badge variant="outline">{profile.status}</Badge>
-                  </div>
-                  <div className="mt-3 grid gap-1 text-xs text-slate-500">
-                    <div>AWS username: {profile.awsIdentityCenterUsername || '—'}</div>
-                    <div>AWS email: {profile.awsIdentityCenterEmail || '—'}</div>
-                    <div>Permission set: {profile.permissionSetName || '—'}</div>
-                    <div>Account: {profile.awsAccountId || '—'}</div>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Edit profile</CardTitle>
-            <CardDescription>
-              Map the platform user to their AWS Identity Center details.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="profile-name">Platform name</Label>
-              <Input id="profile-name" value={form.appUserName} onChange={(e) => setForm((prev) => ({ ...prev, appUserName: e.target.value }))} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="profile-email">Platform email</Label>
-              <Input id="profile-email" type="email" value={form.appUserEmail} onChange={(e) => setForm((prev) => ({ ...prev, appUserEmail: e.target.value }))} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="identity-username">AWS Identity Center username</Label>
-              <Input id="identity-username" value={form.awsIdentityCenterUsername} onChange={(e) => setForm((prev) => ({ ...prev, awsIdentityCenterUsername: e.target.value }))} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="identity-email">AWS Identity Center email</Label>
-              <Input id="identity-email" type="email" value={form.awsIdentityCenterEmail} onChange={(e) => setForm((prev) => ({ ...prev, awsIdentityCenterEmail: e.target.value }))} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="account-id">Sandbox account ID</Label>
-              <Input id="account-id" value={form.awsAccountId} onChange={(e) => setForm((prev) => ({ ...prev, awsAccountId: e.target.value }))} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="permission-set">Permission set</Label>
-              <Input id="permission-set" value={form.permissionSetName} onChange={(e) => setForm((prev) => ({ ...prev, permissionSetName: e.target.value }))} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="status">Status</Label>
-              <Input id="status" value={form.status} onChange={(e) => setForm((prev) => ({ ...prev, status: e.target.value as InternProfileStatus }))} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="notes">Notes</Label>
-              <Textarea id="notes" value={form.notes} onChange={(e) => setForm((prev) => ({ ...prev, notes: e.target.value }))} rows={4} />
-            </div>
-            <div className="flex gap-2 pt-2">
-              <Button onClick={handleSave} className="bg-orange-600 hover:bg-orange-700" disabled={isLoading}>Save to database</Button>
-              <Button onClick={handleDelete} variant="outline" disabled={!selectedProfileId || isLoading}>Delete</Button>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
     </div>
   );
 }

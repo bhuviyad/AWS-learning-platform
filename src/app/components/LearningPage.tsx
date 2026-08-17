@@ -6,6 +6,7 @@ import { Badge } from './ui/badge';
 import { Alert, AlertDescription } from './ui/alert';
 import { loadCompletedLessonIds, markLessonComplete } from '../lib/learningProgress';
 import type { AppUserIdentity } from '../lib/internProfiles';
+import { updateUserPresence } from '../lib/presenceApi';
 
 interface Lesson {
   id: string;
@@ -115,6 +116,15 @@ export default function LearningPage({ currentUser }: LearningPageProps) {
 
   const completedCount = lessons.filter((lesson) => lesson.completed).length;
   const progress = lessons.length > 0 ? (completedCount / lessons.length) * 100 : 0;
+
+  useEffect(() => {
+    if (!currentLesson) return;
+    void updateUserPresence(currentUser, {
+      currentPage: 'learning',
+      currentLessonId: currentLesson.id,
+      currentLessonTitle: currentLesson.title,
+    });
+  }, [currentLesson.id, currentLesson.title, currentUser]);
 
   const markAsComplete = async (lessonId: string) => {
     const lesson = lessons.find((item) => item.id === lessonId);

@@ -279,6 +279,199 @@ async function saveLearningProgressToDb(input) {
   return mapLearningProgressRow(data);
 }
 
+async function upsertUserPresence(input) {
+  const client = getSupabaseAdminClient();
+  if (!client) throw new Error('Supabase is not configured');
+
+  const now = new Date().toISOString();
+  const { data: existing, error: readError } = await client
+    .from('user_presence')
+    .select('first_login_at,last_login_at,current_lesson_id,current_lesson_title')
+    .eq('app_user_id', input.userId)
+    .maybeSingle();
+  if (readError) throw readError;
+
+  const payload = {
+    app_user_id: input.userId,
+    app_user_email: input.userEmail,
+    app_user_name: input.userName,
+    first_login_at: existing?.first_login_at || now,
+    last_login_at: input.login ? now : (existing?.last_login_at || now),
+    last_seen_at: now,
+    current_page: input.currentPage || 'learning',
+    current_lesson_id: input.currentLessonId === undefined ? (existing?.current_lesson_id || null) : input.currentLessonId,
+    current_lesson_title: input.currentLessonTitle === undefined ? (existing?.current_lesson_title || null) : input.currentLessonTitle,
+    signed_out_at: null,
+  };
+
+  const { error } = await client
+    .from('user_presence')
+    .upsert(payload, { onConflict: 'app_user_id' });
+  if (error) throw error;
+}
+
+async function signOutUserPresence(userId) {
+  const client = getSupabaseAdminClient();
+  if (!client) throw new Error('Supabase is not configured');
+  const now = new Date().toISOString();
+  const { error } = await client
+    .from('user_presence')
+    .update({ signed_out_at: now, last_seen_at: now })
+    .eq('app_user_id', userId);
+  if (error) throw error;
+}
+
+function assertAdminRequest(req) {
+  const configuredAdmin = String(process.env.ADMIN_EMAIL || process.env.VITE_ADMIN_EMAIL || '').trim().toLowerCase();
+  const requestAdmin = String(req.get('x-admin-email') || '').trim().toLowerCase();
+  if (!configuredAdmin) {
+    const error = new Error('ADMIN_EMAIL is not configured on the backend');
+    error.statusCode = 503;
+    throw error;
+  }
+  if (!requestAdmin || requestAdmin !== configuredAdmin) {
+    const error = new Error('Admin access required');
+    error.statusCode = 403;
+    throw error;
+  }
+}
+
+function isPresenceOnline(row, nowMs) {
+  const lastSeen = Date.parse(row.last_seen_at || '');
+  if (!Number.isFinite(lastSeen) || nowMs - lastSeen > 2 * 60 * 1000) return false;
+  const signedOut = Date.parse(row.signed_out_at || '');
+  return !Number.isFinite(signedOut) || signedOut < lastSeen;
+}
+
+async function buildAdminDashboard() {
+  const client = getSupabaseAdminClient();
+  if (!client) throw new Error('Supabase is not configured');
+
+  const [profilesResult, sessionsResult, progressResult, presenceResult] = await Promise.all([
+    client.from('intern_profiles').select('*').order('display_name', { ascending: true }),
+    client.from('lab_sessions').select('*').order('start_time', { ascending: false }).limit(250),
+    client.from('learning_progress').select('*').order('completed_at', { ascending: false }),
+    client.from('user_presence').select('*').order('last_seen_at', { ascending: false }),
+  ]);
+
+  for (const result of [profilesResult, sessionsResult, progressResult, presenceResult]) {
+    if (result.error) throw result.error;
+  }
+
+  const profiles = profilesResult.data || [];
+  const rawSessions = sessionsResult.data || [];
+  const rawProgress = progressResult.data || [];
+  const rawPresence = presenceResult.data || [];
+  const nowMs = Date.now();
+  const presenceByUser = new Map(rawPresence.map((row) => [row.app_user_id, row]));
+  const presenceByEmail = new Map(rawPresence.map((row) => [String(row.app_user_email || '').toLowerCase(), row]));
+  const profileByEmail = new Map(profiles.map((row) => [String(row.app_user_email || '').toLowerCase(), row]));
+
+  const presence = rawPresence.map((row) => ({
+    appUserId: row.app_user_id,
+    email: row.app_user_email,
+    name: row.app_user_name,
+    currentPage: row.current_page || 'unknown',
+    currentLessonId: row.current_lesson_id || null,
+    currentLessonTitle: row.current_lesson_title || null,
+    firstLoginAt: row.first_login_at,
+    lastLoginAt: row.last_login_at,
+    lastSeenAt: row.last_seen_at,
+    signedOutAt: row.signed_out_at || null,
+    online: isPresenceOnline(row, nowMs),
+  }));
+
+  const sessions = rawSessions.map((row) => {
+    const presenceRow = presenceByUser.get(row.app_user_id) || presenceByEmail.get(String(row.intern_email || '').toLowerCase());
+    const profile = profileByEmail.get(String(row.intern_email || '').toLowerCase());
+    const endTimeMs = Date.parse(row.end_time || '');
+    return {
+      id: row.id,
+      sessionId: row.session_tag || '',
+      appUserId: row.app_user_id || '',
+      name: row.intern_name || profile?.display_name || presenceRow?.app_user_name || 'Unknown intern',
+      email: row.intern_email || profile?.app_user_email || presenceRow?.app_user_email || '',
+      status: row.status,
+      cleanupState: row.cleanup_state || 'pending',
+      startTime: row.start_time,
+      endTime: row.end_time,
+      remainingMs: Number.isFinite(endTimeMs) ? Math.max(0, endTimeMs - nowMs) : 0,
+      accountId: row.aws_account_id || '',
+      awsUsername: row.aws_identity_center_username || profile?.aws_identity_center_username || '',
+      online: presenceRow ? isPresenceOnline(presenceRow, nowMs) : false,
+    };
+  });
+
+  const progressByUser = new Map();
+  for (const row of rawProgress) {
+    if (!row.completed) continue;
+    const current = progressByUser.get(row.app_user_id) || { count: 0, lastCompletedAt: null, name: row.app_user_name, email: row.app_user_email };
+    current.count += 1;
+    if (!current.lastCompletedAt || Date.parse(row.completed_at || '') > Date.parse(current.lastCompletedAt || '')) {
+      current.lastCompletedAt = row.completed_at || null;
+    }
+    progressByUser.set(row.app_user_id, current);
+  }
+
+  const userIds = new Set([...profiles.map((row) => row.app_user_id).filter(Boolean), ...rawPresence.map((row) => row.app_user_id), ...progressByUser.keys()]);
+  const progress = [...userIds].map((userId) => {
+    const presenceRow = presenceByUser.get(userId);
+    const profile = profiles.find((row) => row.app_user_id === userId)
+      || profileByEmail.get(String(presenceRow?.app_user_email || '').toLowerCase());
+    const completion = progressByUser.get(userId) || { count: 0, lastCompletedAt: null };
+    const completedLessons = Math.min(6, completion.count);
+    return {
+      appUserId: userId,
+      name: profile?.display_name || presenceRow?.app_user_name || completion.name || 'Unknown intern',
+      email: profile?.app_user_email || presenceRow?.app_user_email || completion.email || '',
+      profileStatus: profile?.status || 'unassigned',
+      completedLessons,
+      totalLessons: 6,
+      completionPercent: Math.round((completedLessons / 6) * 100),
+      lastCompletedAt: completion.lastCompletedAt,
+      currentPage: presenceRow?.current_page || 'offline',
+      currentLessonTitle: presenceRow?.current_lesson_title || null,
+      online: presenceRow ? isPresenceOnline(presenceRow, nowMs) : false,
+    };
+  }).sort((a, b) => b.completionPercent - a.completionPercent);
+
+  const sessionsByDay = [];
+  for (let offset = 6; offset >= 0; offset -= 1) {
+    const date = new Date(nowMs - offset * 24 * 60 * 60 * 1000);
+    const key = date.toISOString().slice(0, 10);
+    sessionsByDay.push({
+      day: key,
+      sessions: rawSessions.filter((row) => String(row.start_time || '').slice(0, 10) === key).length,
+    });
+  }
+
+  const cleanupCounts = new Map();
+  for (const row of rawSessions) {
+    const key = row.cleanup_state || 'pending';
+    cleanupCounts.set(key, (cleanupCounts.get(key) || 0) + 1);
+  }
+  const cleanupBreakdown = [...cleanupCounts.entries()].map(([name, value]) => ({ name, value }));
+  const averageCompletion = progress.length
+    ? Math.round(progress.reduce((total, row) => total + row.completionPercent, 0) / progress.length)
+    : 0;
+
+  return {
+    generatedAt: new Date(nowMs).toISOString(),
+    summary: {
+      onlineNow: presence.filter((row) => row.online).length,
+      activeSessions: sessions.filter((row) => row.status === 'active' && row.remainingMs > 0).length,
+      totalInterns: profiles.filter((row) => row.status === 'active').length,
+      averageCompletion,
+      cleanupFailures: sessions.filter((row) => row.cleanupState === 'failed').length,
+    },
+    presence,
+    sessions,
+    progress,
+    sessionsByDay,
+    cleanupBreakdown,
+  };
+}
+
 async function saveLabSessionToDb(sessionId, identity, startTime, endTime) {
   const client = getSupabaseAdminClient();
   if (!client) return;
@@ -612,6 +805,59 @@ app.post('/learning-progress', async (req, res) => {
   } catch (error) {
     console.error('[learning-progress] save error ->', error.message);
     res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/presence', async (req, res) => {
+  const body = req.body || {};
+  const input = {
+    userId: String(body.userId || '').trim(),
+    userEmail: String(body.userEmail || '').trim().toLowerCase(),
+    userName: String(body.userName || '').trim(),
+    currentPage: String(body.currentPage || 'learning').trim(),
+    currentLessonId: Object.prototype.hasOwnProperty.call(body, 'currentLessonId')
+      ? (body.currentLessonId ? String(body.currentLessonId).trim() : null)
+      : undefined,
+    currentLessonTitle: Object.prototype.hasOwnProperty.call(body, 'currentLessonTitle')
+      ? (body.currentLessonTitle ? String(body.currentLessonTitle).trim() : null)
+      : undefined,
+    login: Boolean(body.login),
+  };
+
+  if (!input.userId || !input.userEmail || !input.userName) {
+    return res.status(400).json({ error: 'userId, userEmail, and userName are required' });
+  }
+
+  try {
+    await upsertUserPresence(input);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[presence] update error ->', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/presence/logout', async (req, res) => {
+  const userId = String((req.body || {}).userId || '').trim();
+  if (!userId) return res.status(400).json({ error: 'userId is required' });
+
+  try {
+    await signOutUserPresence(userId);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[presence] logout error ->', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/admin-dashboard', async (req, res) => {
+  try {
+    assertAdminRequest(req);
+    const dashboard = await buildAdminDashboard();
+    res.json(dashboard);
+  } catch (error) {
+    console.error('[admin-dashboard] error ->', error.message);
+    res.status(error.statusCode || 500).json({ error: error.message });
   }
 });
 

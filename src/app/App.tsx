@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Book, FlaskConical, ShieldAlert, Users } from 'lucide-react';
 import LearningPage from './components/LearningPage';
 import HandsOnLabPage from './components/HandsOnLabPage';
@@ -10,6 +10,7 @@ import { Badge } from './components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './components/ui/card';
 import { readCurrentUser, writeCurrentUser, clearCurrentUser, registerUser, authenticateUser } from './auth';
 import { isAdminEmail } from './lib/admin';
+import { signOutUserPresence, updateUserPresence } from './lib/presenceApi';
 
 export default function App() {
   const stored = readCurrentUser();
@@ -22,6 +23,7 @@ export default function App() {
     if (result.success && result.user) {
       writeCurrentUser(result.user);
       setCurrentUser(result.user);
+      void updateUserPresence(result.user, { currentPage: 'learning', login: true });
     }
     return result;
   };
@@ -31,16 +33,38 @@ export default function App() {
     if (result.success && result.user) {
       writeCurrentUser(result.user);
       setCurrentUser(result.user);
+      void updateUserPresence(result.user, { currentPage: 'learning', login: true });
     }
     return result;
   };
 
   const handleLogout = () => {
+    if (currentUser) void signOutUserPresence(currentUser);
     clearCurrentUser();
     setCurrentUser(null);
     setAuthView('login');
     setCurrentPage('learning');
   };
+
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const sendHeartbeat = () => {
+      void updateUserPresence(currentUser, { currentPage });
+    };
+
+    sendHeartbeat();
+    const interval = window.setInterval(sendHeartbeat, 60_000);
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') sendHeartbeat();
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [currentUser, currentPage]);
 
   if (!currentUser) {
     return authView === 'login' ? (

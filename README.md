@@ -122,6 +122,7 @@ VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
 
 # Admin access
 VITE_ADMIN_EMAIL=admin@your-domain.com
+ADMIN_EMAIL=admin@your-domain.com
 
 # Supabase Configuration (backend service role)
 SUPABASE_URL=your_supabase_project_url
@@ -150,7 +151,41 @@ For the current shared-account approach, see:
 - [`docs/INTERN_IDENTITY_MODEL.md`](docs/INTERN_IDENTITY_MODEL.md)
 - [`docs/AWS_INTEGRATION.md`](docs/AWS_INTEGRATION.md)
 - [`docs/SUPABASE_SETUP.md`](docs/SUPABASE_SETUP.md)
+- [`infra/README.md`](infra/README.md)
 
+### Infra as code
+The AWS IAM setup now lives under `infra/aws/` and can be applied with the PowerShell script:
+
+```powershell
+.\infra\aws\scripts\apply-iam.ps1
+```
+
+If AWS CLI access is blocked, use the JSON files in `infra/aws/iam/` and paste them into IAM manually.
+
+This repo includes both:
+- the stricter sandbox policy used for normal operation
+- a broader Lambda policy file you can paste during testing if you want fewer permission checks
+
+The script applies the sandbox role, Lambda execution role, and the backend user's assume-role policy from JSON files in the repo.
+
+### Admin-only access
+The Interns page is visible only to the admin email set in `VITE_ADMIN_EMAIL`.
+
+### Learning progress
+Each intern’s lesson completion is stored separately in Supabase in `learning_progress`.
+
+### Timeout cleanup
+Any session-scoped AWS resource created in the sandbox should be tagged with:
+- `Environment=LearningLab`
+- `SessionId=<current session>`
+- `ExpirationTime=<timestamp>`
+
+That same timeout/cleanup flow now applies to:
+- Lambda
+- EventBridge
+- DynamoDB
+
+If you add new services later, keep them session-scoped and include them in the cleanup helper.
 ### What to configure in AWS
 - Shared sandbox account: `483591406604`
 - Intern sandbox role: `interns-sandbox-role`
@@ -189,6 +224,9 @@ See the Supabase docs and migration for the current schema:
 - `supabase/migrations/004_per_intern_identity_center.sql`
 - `supabase/migrations/005_intern_profiles_shared_fields.sql`
 - `supabase/migrations/006_learning_progress.sql`
+- `supabase/migrations/007_lab_session_cleanup_tracking.sql`
+- `supabase/migrations/008_local_user_lab_sessions.sql`
+- `supabase/migrations/009_admin_operations_dashboard.sql`
 - `intern_profiles`
 - `lab_sessions`
 - `lab_resources`

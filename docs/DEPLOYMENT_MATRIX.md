@@ -19,14 +19,29 @@ Push the source changes only:
 ### Frontend / config
 - `src/app/lib/labApi.ts`
 - `src/app/components/HandsOnLabPage.tsx`
+- `src/app/components/LearningPage.tsx`
+- `src/app/lib/internProfiles.ts`
+- `src/app/lib/learningProgress.ts`
+- `src/app/lib/admin.ts`
+- `src/app/components/InternsPage.tsx`
+- `src/app/App.tsx`
 - `.env.local.example`
 - `package.json`
 - `.gitignore`
+
+### Infra-as-code
+- `infra/README.md`
+- `infra/aws/iam/README.md`
+- `infra/aws/iam/policies/*.json`
+- `infra/aws/iam/roles/*.json`
+- `infra/aws/scripts/*.ps1`
 
 ### Docs
 - `README.md`
 - `docs/AWS_INTEGRATION.md`
 - `docs/SUPABASE_SETUP.md`
+- `docs/DEPLOYMENT_MATRIX.md`
+- `docs/INTERN_IDENTITY_MODEL.md`
 
 ### Do not commit
 - `node_modules/`
@@ -67,6 +82,7 @@ Use Render for the hosted backend / scheduler runner.
 ### Add backend env vars
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
+- `ADMIN_EMAIL` (must match frontend `VITE_ADMIN_EMAIL`)
 - `AWS_LAMBDA_EXECUTION_ROLE_ARN`
 - `LAB_ACCOUNT_ID`
 - `LAB_ACCOUNT_NAME`
@@ -75,6 +91,10 @@ Use Render for the hosted backend / scheduler runner.
 - `004_per_intern_identity_center.sql`
 - `005_intern_profiles_shared_fields.sql`
 - `006_learning_progress.sql`
+- `007_lab_session_cleanup_tracking.sql`
+- `008_local_user_lab_sessions.sql`
+- `009_admin_operations_dashboard.sql`
+
 ### Add a cron job
 Create a Render cron job that runs every 5 minutes and calls:
 
