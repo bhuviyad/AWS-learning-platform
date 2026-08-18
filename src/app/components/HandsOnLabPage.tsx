@@ -18,6 +18,7 @@ interface LabSession {
   accountName: string | null;
   accountId: string | null;
   lambdaExecutionRoleArn: string | null;
+  resourceExpirationTime: string | null;
   expiresAt: string | null;
   awsConsoleUrl: string | null;
   loginUrl: string | null;
@@ -43,6 +44,7 @@ function createInactiveSession(): LabSession {
     accountName: null,
     accountId: null,
     lambdaExecutionRoleArn: null,
+    resourceExpirationTime: null,
     expiresAt: null,
     awsConsoleUrl: null,
     loginUrl: null,
@@ -177,6 +179,7 @@ export default function HandsOnLabPage({ currentUser }: HandsOnLabPageProps) {
           accountName: response.accountName || null,
           accountId: response.accountId || null,
           lambdaExecutionRoleArn: response.lambdaExecutionRoleArn || null,
+          resourceExpirationTime: response.resourceExpirationTime || String(endTime),
           expiresAt,
           awsConsoleUrl: response.consoleUrl,
           loginUrl: (response as any).loginUrl || null,
@@ -326,7 +329,7 @@ export default function HandsOnLabPage({ currentUser }: HandsOnLabPageProps) {
           </div>
           <h1 className="text-2xl font-bold text-slate-900 mb-2">AWS Hands-on Lab Environment</h1>
           <p className="text-slate-600">
-            Launch a temporary AWS sandbox for Lambda practice. Interns create Lambda in the AWS Console, but the app shows the required role and tags so cleanup works automatically.
+            Practice with Lambda, EventBridge, DynamoDB, and S3 in a temporary sandbox. Session-owned resources are removed when the lab stops or expires.
           </p>
           <p className="mt-2 text-xs text-slate-500">
             Signed in as {currentUser.name} ({currentUser.email})
@@ -431,15 +434,20 @@ export default function HandsOnLabPage({ currentUser }: HandsOnLabPageProps) {
                 <span className="font-medium text-right break-all">{formatIstDateTime(session.expiresAt)}</span>
               </div>
             </div>
-            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 space-y-1">
-              <p className="font-medium">Before creating a Lambda in AWS Console:</p>
-              <p>1. Name it with <span className="font-mono">learninglab-*</span></p>
-              <p>2. Choose the existing role shown above</p>
-              <p>3. Add tags with the exact values shown above.</p>
-              <p className="font-mono">Environment=LearningLab</p>
-              <p className="font-mono">SessionId={session.id || '&lt;this session&gt;'}</p>
-              <p className="font-mono">ExpirationTime={session.endTime || '&lt;timestamp&gt;'}</p>
-              <p className="text-[11px] text-amber-800">The expiry display above is in IST; the tag value is the session end timestamp number.</p>
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 space-y-2">
+              <p className="font-medium">Required rules for every AWS resource:</p>
+              <div className="space-y-1 font-mono">
+                <p>Environment=LearningLab</p>
+                <p>SessionId={session.id || '&lt;this session&gt;'}</p>
+                <p>ExpirationTime={session.resourceExpirationTime || '&lt;timestamp&gt;'}</p>
+              </div>
+              <div className="space-y-1 pt-1">
+                <p><span className="font-medium">Lambda:</span> name <span className="font-mono">learninglab-*</span> and choose the existing Lambda role above.</p>
+                <p><span className="font-medium">EventBridge:</span> rule/event bus name <span className="font-mono">learninglab-*</span>.</p>
+                <p><span className="font-medium">DynamoDB:</span> table name <span className="font-mono">learninglab-*</span>.</p>
+                <p><span className="font-medium">S3:</span> bucket name <span className="font-mono break-all">learninglab-{session.id || '&lt;session-id&gt;'}-*</span>.</p>
+              </div>
+              <p className="text-[11px] text-amber-800">The expiry display above is in IST; the tag value is the numeric session end timestamp. Stop Lab and timeout cleanup remove all matching resources.</p>
             </div>
           </div>
         )}
@@ -454,7 +462,7 @@ export default function HandsOnLabPage({ currentUser }: HandsOnLabPageProps) {
         <div className="bg-white rounded-lg p-4 border border-slate-200">
           <Database className="w-5 h-5 text-orange-600 mb-2" />
           <h4 className="font-semibold text-slate-900 mb-1">Real AWS Services</h4>
-          <p className="text-sm text-slate-600">Practice with actual AWS Lambda resources in a safe sandbox.</p>
+          <p className="text-sm text-slate-600">Practice with Lambda, EventBridge, DynamoDB, and S3 resources in a safe sandbox.</p>
         </div>
       </div>
     </div>

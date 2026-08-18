@@ -35,11 +35,13 @@ function loadEnvFile(filePath) {
 loadEnvFile(path.resolve(process.cwd(), '.env.local'));
 
 function makeFakeCredentials() {
+  const expirationTime = Date.now() + 900 * 1000;
   return {
     accessKeyId: `ASIA${Math.random().toString(36).slice(2, 12).toUpperCase()}`,
     secretAccessKey: Math.random().toString(36).slice(2, 40),
     sessionToken: Math.random().toString(36).repeat(4).slice(0, 200),
-    expiration: new Date(Date.now() + 900 * 1000).toISOString(),
+    expiration: new Date(expirationTime).toISOString(),
+    resourceExpirationTime: String(expirationTime),
   };
 }
 
@@ -568,6 +570,7 @@ async function assumeSandboxRole(sessionId, identity) {
     secretAccessKey: creds.SecretAccessKey,
     sessionToken: creds.SessionToken,
     expiration: creds.Expiration ? creds.Expiration.toISOString() : new Date(expiration).toISOString(),
+    resourceExpirationTime: String(expiration),
   };
 }
 
@@ -669,6 +672,7 @@ app.post('/start-lab', async (req, res) => {
       ...(accountId ? { accountId } : {}),
       ...(destination ? { consoleUrl: destination } : {}),
       ...(lambdaExecutionRoleArn ? { lambdaExecutionRoleArn } : {}),
+      resourceExpirationTime: credentials.resourceExpirationTime,
       expiresAt,
       ...(loginUrl ? { loginUrl } : {}),
     });

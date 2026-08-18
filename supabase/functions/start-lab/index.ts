@@ -177,6 +177,7 @@ export default async function (req: Request) {
       accountId: Deno.env.get('LAB_ACCOUNT_ID') || identity.awsAccountId || '',
       accountName: Deno.env.get('LAB_ACCOUNT_NAME') || '',
       lambdaExecutionRoleArn,
+      resourceExpirationTime: String(expirationTime),
       expiresAt: new Date(expirationTime).toISOString(),
       ...(loginUrl ? { loginUrl } : {}),
     });

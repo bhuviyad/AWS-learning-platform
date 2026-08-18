@@ -10,6 +10,7 @@ export interface LabApiResponse {
   permissionSetName?: string;
   awsAccountId?: string;
   lambdaExecutionRoleArn?: string;
+  resourceExpirationTime?: string;
   internProfile?: unknown;
   expiresAt?: string;
   credentials: {
@@ -106,11 +107,12 @@ export async function startLabSession(identity?: LabIdentityContext) {
   }
 
   const sessionId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const fakeExpirationTime = Date.now() + 2 * 60 * 1000;
   const fakeCredentials = {
     accessKeyId: `AKIA${Math.random().toString(36).slice(2, 12).toUpperCase()}`,
     secretAccessKey: Math.random().toString(36).slice(2, 32),
     sessionToken: Math.random().toString(36).slice(2, 64),
-    expiration: new Date(Date.now() + 2 * 60 * 1000).toISOString(),
+    expiration: new Date(fakeExpirationTime).toISOString(),
   };
 
   return {
@@ -124,6 +126,7 @@ export async function startLabSession(identity?: LabIdentityContext) {
     },
     consoleUrl: destination,
     lambdaExecutionRoleArn: getLambdaExecutionRoleArn() || undefined,
+    resourceExpirationTime: String(fakeExpirationTime),
   } as LabApiResponse;
 }
 
