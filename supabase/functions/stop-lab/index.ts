@@ -1,4 +1,4 @@
-import { cleanupLabLambdaFunctions, createLambdaCleanupClient } from '../_shared/lambdaCleanup.ts';
+import { cleanupTaggedSandboxResources, createSandboxCleanupClients } from '../_shared/lambdaCleanup.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -25,9 +25,9 @@ export default async function (req: Request) {
       return json({ error: 'sessionId is required' }, 400);
     }
 
-    let client;
+    let clients;
     try {
-      client = createLambdaCleanupClient();
+      clients = createSandboxCleanupClients();
     } catch (error) {
       return json({
         success: true,
@@ -37,8 +37,8 @@ export default async function (req: Request) {
       });
     }
 
-    const cleanup = await cleanupLabLambdaFunctions({
-      client,
+    const cleanup = await cleanupTaggedSandboxResources({
+      ...clients,
       sessionId,
       mode: 'manual',
     });

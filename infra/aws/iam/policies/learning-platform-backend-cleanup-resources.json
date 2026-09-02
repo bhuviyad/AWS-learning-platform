@@ -1,0 +1,79 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DiscoverSandboxResources",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:ListFunctions",
+        "events:ListEventBuses",
+        "events:ListRules",
+        "events:ListTargetsByRule",
+        "events:ListTagsForResource",
+        "dynamodb:ListTables",
+        "dynamodb:DescribeTable",
+        "dynamodb:ListTagsOfResource",
+        "s3:ListAllMyBuckets",
+        "s3:GetBucketLocation",
+        "s3:GetBucketTagging"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DeleteTaggedLambdaFunctions",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:ListTags",
+        "lambda:DeleteFunction"
+      ],
+      "Resource": "arn:aws:lambda:ap-south-1:483591406604:function:learninglab-*"
+    },
+    {
+      "Sid": "DeleteTaggedEventBridgeResources",
+      "Effect": "Allow",
+      "Action": [
+        "events:RemoveTargets",
+        "events:DeleteRule",
+        "events:DeleteEventBus"
+      ],
+      "Resource": [
+        "arn:aws:events:ap-south-1:483591406604:event-bus/learninglab-*",
+        "arn:aws:events:ap-south-1:483591406604:rule/learninglab-*",
+        "arn:aws:events:ap-south-1:483591406604:rule/*/learninglab-*"
+      ]
+    },
+    {
+      "Sid": "DeleteTaggedDynamoDbTables",
+      "Effect": "Allow",
+      "Action": "dynamodb:DeleteTable",
+      "Resource": "arn:aws:dynamodb:ap-south-1:483591406604:table/learninglab-*"
+    },
+    {
+      "Sid": "EmptySessionS3Buckets",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:ListBucketVersions",
+        "s3:ListBucketMultipartUploads",
+        "s3:DeleteBucket"
+      ],
+      "Resource": "arn:aws:s3:::learninglab-*"
+    },
+    {
+      "Sid": "DeleteSessionS3Objects",
+      "Effect": "Allow",
+      "Action": [
+        "s3:DeleteObject",
+        "s3:DeleteObjectVersion",
+        "s3:AbortMultipartUpload"
+      ],
+      "Resource": "arn:aws:s3:::learninglab-*/*"
+    },
+    {
+      "Sid": "InvokeOnlyLearningLabSessionRevoker",
+      "Effect": "Allow",
+      "Action": "lambda:InvokeFunction",
+      "Resource": "arn:aws:lambda:ap-south-1:483591406604:function:learninglab-session-revoker"
+    }
+  ]
+}

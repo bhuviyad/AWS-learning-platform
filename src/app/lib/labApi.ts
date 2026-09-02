@@ -130,7 +130,10 @@ export async function startLabSession(identity?: LabIdentityContext) {
   } as LabApiResponse;
 }
 
-export async function stopLabSession(sessionId: string) {
+export async function stopLabSession(
+  sessionId: string,
+  options: { expirationTime?: string | null; reason?: 'manual' | 'expired' } = {},
+) {
   if (sessionId.startsWith('local-')) {
     return { success: true };
   }
@@ -142,7 +145,11 @@ export async function stopLabSession(sessionId: string) {
       const res = await fetch(local.stop, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId }),
+        body: JSON.stringify({
+          sessionId,
+          expirationTime: options.expirationTime || undefined,
+          reason: options.reason || 'manual',
+        }),
         credentials: 'omit',
       });
 

@@ -52,6 +52,7 @@ export default function SessionsTable({ sessions }: SessionsTableProps) {
                 <TableHead>Started</TableHead>
                 <TableHead>Expires</TableHead>
                 <TableHead>Cleanup</TableHead>
+                <TableHead>Revocation</TableHead>
                 <TableHead>AWS identity</TableHead>
               </TableRow>
             </TableHeader>
@@ -80,6 +81,14 @@ export default function SessionsTable({ sessions }: SessionsTableProps) {
                   </TableCell>
                   <TableCell>
                     <Badge className={`capitalize ${cleanupClass(session.cleanupState)}`}>{session.cleanupState}</Badge>
+                  </TableCell>
+                  <TableCell>
+                    <Badge className={`capitalize ${cleanupClass(session.revocationState === 'revoked' || session.revocationState === 'expired' ? 'deleted' : session.revocationState)}`}>
+                      {session.revocationState.replaceAll('_', ' ')}
+                    </Badge>
+                    {session.revocationError && (
+                      <p className="mt-1 max-w-52 whitespace-normal text-xs text-red-600" title={session.revocationError}>{session.revocationError}</p>
+                    )}
                   </TableCell>
                   <TableCell>
                     <p className="max-w-40 truncate text-xs text-slate-700">{session.awsUsername || '—'}</p>

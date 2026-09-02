@@ -28,6 +28,9 @@ export interface DashboardSession {
   email: string;
   status: string;
   cleanupState: string;
+  revocationState: string;
+  revocationError: string | null;
+  revokedAt: string | null;
   startTime: string;
   endTime: string;
   remainingMs: number;

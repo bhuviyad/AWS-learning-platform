@@ -60,61 +60,21 @@ Every lab session and every lab resource should carry the same tag set:
 
 ## IAM Policy Example
 
-Use a session-scoped policy like this on the sandbox role:
+The actual policy JSON now lives in:
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "LambdaSessionScoped",
-      "Effect": "Allow",
-      "Action": [
-        "lambda:CreateFunction",
-        "lambda:DeleteFunction",
-        "lambda:GetFunction",
-        "lambda:ListFunctions",
-        "lambda:ListTags",
-        "lambda:TagResource",
-        "lambda:UntagResource"
-      ],
-      "Resource": "arn:aws:lambda:REGION:ACCOUNT_ID:function:learninglab-*",
-      "Condition": {
-        "StringEquals": {
-          "aws:ResourceTag/Environment": "LearningLab",
-          "aws:ResourceTag/SessionId": "${aws:PrincipalTag/SessionId}"
-        }
-      }
-    },
-    {
-      "Sid": "LambdaCreateWithRequiredTags",
-      "Effect": "Allow",
-      "Action": "lambda:CreateFunction",
-      "Resource": "*",
-      "Condition": {
-        "StringEquals": {
-          "aws:RequestTag/Environment": "LearningLab",
-          "aws:RequestTag/SessionId": "${aws:PrincipalTag/SessionId}"
-        },
-        "ForAllValues:StringEquals": {
-          "aws:TagKeys": ["Environment", "SessionId", "ExpirationTime"]
-        }
-      }
-    },
-    {
-      "Sid": "PassLambdaExecutionRole",
-      "Effect": "Allow",
-      "Action": "iam:PassRole",
-      "Resource": "arn:aws:iam::ACCOUNT_ID:role/LearningLabLambdaExecutionRole",
-      "Condition": {
-        "StringEquals": {
-          "iam:PassedToService": "lambda.amazonaws.com"
-        }
-      }
-    }
-  ]
-}
+- `infra/aws/iam/policies/interns-sandbox-permissions.json`
+- `infra/aws/iam/policies/interns-sandbox-permissions-full-lambda.json`
+- `infra/aws/iam/policies/learning-platform-backend-assume-sandbox-role.json`
+- `infra/aws/iam/roles/interns-sandbox-trust-policy.json`
+- `infra/aws/iam/roles/interns-lambda-execution-trust-policy.json`
+
+Use the PowerShell apply script to push them to AWS:
+
+```powershell
+.\infra\aws\scripts\apply-iam.ps1
 ```
+
+If AWS CLI access is blocked, paste the JSON files directly into the IAM console. The broader Lambda policy is there specifically as a manual fallback for easier testing.
 
 ## Lambda Test Resource Flow
 
@@ -127,7 +87,10 @@ For the current end-to-end test:
 5. Start a new session and verify the old Lambda no longer exists.
 
 This is the same flow interns will use in practice, so it validates both creation and cleanup.
+
 ## Cleanup
+
+The cleanup path is shared by:
 
 The cleanup path is shared by:
 
@@ -135,10 +98,15 @@ The cleanup path is shared by:
 - `supabase/functions/cleanup-expired-labs/index.ts` for scheduled cleanup
 - `scripts/local-lab-mock/server.cjs` for local testing
 
-The cleanup logic only deletes Lambda functions that:
+The cleanup logic deletes any session-scoped resources that were created with the Learning Lab tags:
 
-- have `Environment=LearningLab`
-- match the current `SessionId` for manual cleanup, or are expired for scheduled cleanup
+- `Environment=LearningLab`
+- `SessionId=<current session>`
+- `ExpirationTime=<timestamp>`
+
+## Additional sandbox services
+The sandbox role also includes EventBridge and DynamoDB permissions for lab exercises.
+If you want to use them in a stricter way, narrow the actions in `infra/aws/iam/policies/interns-sandbox-permissions.json`.
 
 ## Scheduling
 
@@ -149,3 +117,8 @@ Trigger `supabase/functions/cleanup-expired-labs/index.ts` every few minutes usi
 - cron
 
 This ensures expired lab resources are removed even if the user closes the browser tab.
+
+## Notes
+- EventBridge and DynamoDB are enabled for sandbox lab exercises.
+- Narrow the actions in the infra policy files if you want stricter service limits later.
+- Cleanup is session-scoped, so the same timeout flow applies to Lambda, EventBridge, and DynamoDB.

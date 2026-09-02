@@ -1,0 +1,222 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Revokes one Learning Lab STS session without interrupting other interns.
+
+Parameters:
+  SandboxRoleName:
+    Type: String
+    Default: interns-sandbox-role
+  RevokerFunctionName:
+    Type: String
+    Default: learninglab-session-revoker
+  RevocationPolicyName:
+    Type: String
+    Default: LearningLabRevokedSessions
+
+Resources:
+  SessionRevocationLockTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: learninglab-session-revocation-lock
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: LockId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: LockId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ExpiresAt
+        Enabled: true
+
+  SessionRevokerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: learninglab-session-revoker-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: UpdateOnlyLearningLabRevocationPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iam:GetRolePolicy
+                  - iam:PutRolePolicy
+                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${SandboxRoleName}
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt SessionRevocationLockTable.Arn
+
+  SessionRevokerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Ref RevokerFunctionName
+      Description: Adds one exact Learning Lab SessionId principal tag to the sandbox deny policy.
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt SessionRevokerRole.Arn
+      Timeout: 15
+      MemorySize: 128
+      Environment:
+        Variables:
+          SANDBOX_ROLE_NAME: !Ref SandboxRoleName
+          REVOCATION_POLICY_NAME: !Ref RevocationPolicyName
+          LOCK_TABLE_NAME: !Ref SessionRevocationLockTable
+      Code:
+        ZipFile: |
+          const { IAMClient, GetRolePolicyCommand, PutRolePolicyCommand } = require('@aws-sdk/client-iam');
+          const { DynamoDBClient, DeleteItemCommand, PutItemCommand } = require('@aws-sdk/client-dynamodb');
+
+          const iam = new IAMClient({});
+          const dynamodb = new DynamoDBClient({});
+          const roleName = process.env.SANDBOX_ROLE_NAME;
+          const policyName = process.env.REVOCATION_POLICY_NAME;
+          const lockTableName = process.env.LOCK_TABLE_NAME;
+          const MAX_SESSION_AGE_MS = 20 * 60 * 1000;
+          const SESSION_PATTERN = /^session-[A-Za-z0-9-]{8,100}$/;
+
+          function emptyPolicy() {
+            return { Version: '2012-10-17', Statement: [] };
+          }
+
+          function decodePolicy(document) {
+            if (!document) return emptyPolicy();
+            if (typeof document === 'object') return document;
+            try {
+              return JSON.parse(decodeURIComponent(document));
+            } catch {
+              return emptyPolicy();
+            }
+          }
+
+          function currentStatement(policy) {
+            const statements = Array.isArray(policy.Statement) ? policy.Statement : [];
+            return statements.find((item) => item && item.Sid === 'DenyRevokedLearningLabSessions');
+          }
+
+          const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+          async function acquireLock(owner) {
+            for (let attempt = 0; attempt < 20; attempt += 1) {
+              const nowSeconds = Math.floor(Date.now() / 1000);
+              try {
+                await dynamodb.send(new PutItemCommand({
+                  TableName: lockTableName,
+                  Item: {
+                    LockId: { S: policyName },
+                    Owner: { S: owner },
+                    ExpiresAt: { N: String(nowSeconds + 30) },
+                  },
+                  ConditionExpression: 'attribute_not_exists(LockId) OR ExpiresAt < :now',
+                  ExpressionAttributeValues: { ':now': { N: String(nowSeconds) } },
+                }));
+                return;
+              } catch (error) {
+                if (error?.name !== 'ConditionalCheckFailedException') throw error;
+                await wait(200);
+              }
+            }
+            throw new Error('Timed out waiting for the revocation policy lock');
+          }
+
+          async function releaseLock(owner) {
+            try {
+              await dynamodb.send(new DeleteItemCommand({
+                TableName: lockTableName,
+                Key: { LockId: { S: policyName } },
+                ConditionExpression: 'Owner = :owner',
+                ExpressionAttributeValues: { ':owner': { S: owner } },
+              }));
+            } catch (error) {
+              if (error?.name !== 'ConditionalCheckFailedException') console.error('Unable to release lock', error);
+            }
+          }
+
+          exports.handler = async (event = {}, context = {}) => {
+            const sessionId = String(event.sessionId || '').trim();
+            const expirationTime = Number(event.expirationTime);
+            const now = Date.now();
+
+            if (!SESSION_PATTERN.test(sessionId)) {
+              throw new Error('Invalid Learning Lab sessionId');
+            }
+            if (!Number.isFinite(expirationTime) || expirationTime <= now - 60_000 || expirationTime > now + MAX_SESSION_AGE_MS) {
+              throw new Error('Invalid session expirationTime');
+            }
+
+            const lockOwner = String(context.awsRequestId || `${sessionId}-${now}`);
+            await acquireLock(lockOwner);
+
+            try {
+              let policy = emptyPolicy();
+              try {
+                const response = await iam.send(new GetRolePolicyCommand({
+                  RoleName: roleName,
+                  PolicyName: policyName,
+                }));
+                policy = decodePolicy(response.PolicyDocument);
+              } catch (error) {
+                if (error && error.name !== 'NoSuchEntityException') throw error;
+              }
+
+              const existing = currentStatement(policy);
+              const existingExpiry = Date.parse(existing?.Condition?.DateLessThan?.['aws:CurrentTime'] || '');
+              const existingIds = existingExpiry > now
+                ? existing?.Condition?.StringEquals?.['aws:PrincipalTag/SessionId'] || []
+                : [];
+              const ids = Array.from(new Set([...(Array.isArray(existingIds) ? existingIds : [existingIds]), sessionId])).filter(Boolean);
+              const denyUntil = new Date(Math.max(Number.isFinite(existingExpiry) ? existingExpiry : 0, expirationTime)).toISOString();
+
+              const nextPolicy = {
+                Version: '2012-10-17',
+                Statement: [{
+                  Sid: 'DenyRevokedLearningLabSessions',
+                  Effect: 'Deny',
+                  Action: '*',
+                  Resource: '*',
+                  Condition: {
+                    StringEquals: {
+                      'aws:PrincipalTag/SessionId': ids,
+                    },
+                    DateLessThan: {
+                      'aws:CurrentTime': denyUntil,
+                    },
+                  },
+                }],
+              };
+
+              await iam.send(new PutRolePolicyCommand({
+                RoleName: roleName,
+                PolicyName: policyName,
+                PolicyDocument: JSON.stringify(nextPolicy),
+              }));
+
+              return {
+                success: true,
+                sessionId,
+                denyUntil,
+                revokedSessionCount: ids.length,
+              };
+            } finally {
+              await releaseLock(lockOwner);
+            }
+          };
+
+Outputs:
+  SessionRevokerFunctionName:
+    Description: Configure this value as AWS_SESSION_REVOKER_FUNCTION_NAME on the Render backend.
+    Value: !Ref SessionRevokerFunction
+  SessionRevokerFunctionArn:
+    Value: !GetAtt SessionRevokerFunction.Arn
+  SessionRevokerRoleArn:
+    Value: !GetAtt SessionRevokerRole.Arn

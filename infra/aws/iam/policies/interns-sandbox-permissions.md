@@ -41,7 +41,7 @@ SessionId=<exact current session id>
 ExpirationTime=<exact value shown by the lab page>
 ```
 
-For Lambda, EventBridge, and DynamoDB, IAM compares all three requested values with the STS principal tags. A wrong value is denied. Interns are not allowed to retag or untag these protected resources after creation.
+For Lambda, EventBridge, and DynamoDB, IAM compares all three requested values with the STS principal tags. A wrong value is denied. The policy permits `TagResource` only in the exact-tag creation statement because AWS requires that additional authorization when a resource is created with tags. General retagging and all untagging remain denied.
 
 S3 cannot attach tags atomically during `CreateBucket`, so its primary ownership control is the exact session id embedded in the required bucket-name prefix. The cleanup process also checks bucket tags when available.
 

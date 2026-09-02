@@ -3,7 +3,7 @@ const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 const { STSClient, AssumeRoleCommand } = require('@aws-sdk/client-sts');
-const { LambdaClient } = require('@aws-sdk/client-lambda');
+const { InvokeCommand, LambdaClient } = require('@aws-sdk/client-lambda');
 const { EventBridgeClient } = require('@aws-sdk/client-eventbridge');
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { S3Client } = require('@aws-sdk/client-s3');
@@ -395,6 +395,9 @@ async function buildAdminDashboard() {
       email: row.intern_email || profile?.app_user_email || presenceRow?.app_user_email || '',
       status: row.status,
       cleanupState: row.cleanup_state || 'pending',
+      revocationState: row.revocation_state || 'not_requested',
+      revocationError: row.revocation_error || null,
+      revokedAt: row.revoked_at || null,
       startTime: row.start_time,
       endTime: row.end_time,
       remainingMs: Number.isFinite(endTimeMs) ? Math.max(0, endTimeMs - nowMs) : 0,
@@ -512,6 +515,54 @@ async function updateLabSessionCleanupState(sessionId, status, cleanupState) {
   if (error) throw error;
 }
 
+async function updateLabSessionRevocationState(sessionId, revocationState, revocationError = null) {
+  const client = getSupabaseAdminClient();
+  if (!client) return;
+
+  const { error } = await client
+    .from('lab_sessions')
+    .update({
+      revocation_state: revocationState,
+      revocation_error: revocationError,
+      revoked_at: revocationState === 'revoked' ? new Date().toISOString() : null,
+    })
+    .eq('session_tag', sessionId);
+
+  if (error) throw error;
+}
+
+async function revokeLabSession(sessionId, expirationTime) {
+  const functionName = String(process.env.AWS_SESSION_REVOKER_FUNCTION_NAME || '').trim();
+  if (!functionName) throw new Error('AWS_SESSION_REVOKER_FUNCTION_NAME is not configured');
+
+  const numericExpiration = Number(expirationTime);
+  if (!Number.isFinite(numericExpiration)) throw new Error('Valid expirationTime is required for session revocation');
+
+  const lambda = createLambdaClientFromBackend();
+  if (!lambda) throw new Error('Backend AWS credentials are not configured');
+
+  const response = await lambda.send(new InvokeCommand({
+    FunctionName: functionName,
+    InvocationType: 'RequestResponse',
+    Payload: Buffer.from(JSON.stringify({ sessionId, expirationTime: numericExpiration })),
+  }));
+
+  const payloadText = response.Payload ? Buffer.from(response.Payload).toString('utf8') : '{}';
+  let payload;
+  try {
+    payload = JSON.parse(payloadText || '{}');
+  } catch {
+    payload = { raw: payloadText };
+  }
+
+  if (response.FunctionError) {
+    const message = payload?.errorMessage || payload?.error || response.FunctionError;
+    throw new Error(`Session revoker failed: ${message}`);
+  }
+
+  return payload;
+}
+
 async function listExpiredLabSessionIds() {
   const client = getSupabaseAdminClient();
   if (!client) return [];
@@ -559,7 +610,7 @@ async function assumeSandboxRole(sessionId, identity) {
 
   const response = await sts.send(new AssumeRoleCommand({
     RoleArn: process.env.AWS_LAB_ROLE_ARN,
-    RoleSessionName: `lab-${sessionId.slice(0, 8)}`,
+    RoleSessionName: `lab-${sessionId.replace(/[^A-Za-z0-9+=,.@_-]/g, '-').slice(-48)}`,
     DurationSeconds: 900,
     Tags: tags,
   }));
@@ -685,27 +736,54 @@ app.post('/start-lab', async (req, res) => {
 });
 
 app.post('/stop-lab', async (req, res) => {
-  const { sessionId } = req.body || {};
+  const { sessionId, expirationTime, reason = 'manual' } = req.body || {};
   const cleanedSessionId = String(sessionId || '').trim();
+  const cleanedReason = reason === 'expired' ? 'expired' : 'manual';
 
   if (!cleanedSessionId) {
     return res.status(400).json({ error: 'sessionId is required' });
   }
 
-  console.log('[lab] stop-lab cleanup ->', cleanedSessionId);
+  console.log('[lab] stop-lab cleanup ->', cleanedSessionId, cleanedReason);
+  await updateLabSessionCleanupState(cleanedSessionId, 'stopping', 'scheduled').catch(() => {});
+
+  let revocation = { skipped: true, reason: 'credentials naturally expired' };
+  let revocationError = null;
+  if (cleanedReason === 'manual') {
+    await updateLabSessionRevocationState(cleanedSessionId, 'pending').catch(() => {});
+    try {
+      revocation = await revokeLabSession(cleanedSessionId, expirationTime);
+      await updateLabSessionRevocationState(cleanedSessionId, 'revoked').catch(() => {});
+    } catch (error) {
+      revocationError = error.message;
+      await updateLabSessionRevocationState(cleanedSessionId, 'failed', revocationError).catch(() => {});
+    }
+  } else {
+    await updateLabSessionRevocationState(cleanedSessionId, 'expired').catch(() => {});
+  }
 
   try {
-    await updateLabSessionCleanupState(cleanedSessionId, 'stopping', 'scheduled').catch(() => {});
     const cleanup = await cleanupSessionResources(cleanedSessionId, 'manual');
     const cleanupState = cleanup.errors.length > 0 ? 'failed' : 'deleted';
     await updateLabSessionCleanupState(cleanedSessionId, 'expired', cleanupState).catch((error) => {
       console.warn('[cleanup] unable to update session state ->', error.message);
     });
-    res.json({ success: true, sessionId: cleanedSessionId, cleanup });
+
+    if (revocationError) {
+      return res.status(500).json({
+        success: false,
+        sessionId: cleanedSessionId,
+        error: revocationError,
+        revocation: { success: false, error: revocationError },
+        cleanup,
+      });
+    }
+
+    res.json({ success: cleanup.errors.length === 0, sessionId: cleanedSessionId, revocation, cleanup });
   } catch (error) {
     await updateLabSessionCleanupState(cleanedSessionId, 'expired', 'failed').catch(() => {});
     console.error('[cleanup] failed ->', error.message);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({ success: false, error: error.message, revocation });
   }
 });
 

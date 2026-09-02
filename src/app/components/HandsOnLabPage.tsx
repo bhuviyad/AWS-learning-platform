@@ -203,28 +203,39 @@ export default function HandsOnLabPage({ currentUser }: HandsOnLabPageProps) {
   };
 
   const handleStopLab = async () => {
-    setSession({ ...session, status: 'stopping' });
+    const activeSession = session;
+    setErrorMessage('');
+    setSession({ ...activeSession, status: 'stopping' });
 
-    if (hasLabBackendConfigured() && session.id) {
+    if (hasLabBackendConfigured() && activeSession.id) {
       try {
-        await stopLabSession(session.id);
-      } catch {
-        // Fall through to local cleanup below so the UI still resets.
+        await stopLabSession(activeSession.id, {
+          expirationTime: activeSession.resourceExpirationTime,
+          reason: 'manual',
+        });
+      } catch (error) {
+        setSession({ ...activeSession, status: 'active' });
+        setErrorMessage(
+          `${error instanceof Error ? error.message : 'Unable to stop the lab.'} ` +
+          'Your AWS session may still be active. Retry Stop Lab or contact the administrator.'
+        );
+        return;
       }
     }
 
-    setTimeout(() => {
-      setSession(createInactiveSession());
-      setLastConsoleUrl(null);
-      setTimeRemaining(0);
-    }, 1500);
+    setSession(createInactiveSession());
+    setLastConsoleUrl(null);
+    setTimeRemaining(0);
   };
 
   const handleExpireSession = () => {
     const sessionId = session.id;
     setSession({ ...session, status: 'expired' });
     if (sessionId) {
-      stopLabSession(sessionId).catch(() => {});
+      stopLabSession(sessionId, {
+        expirationTime: session.resourceExpirationTime,
+        reason: 'expired',
+      }).catch(() => {});
     }
     setTimeout(() => {
       setSession(createInactiveSession());
@@ -270,7 +281,7 @@ export default function HandsOnLabPage({ currentUser }: HandsOnLabPageProps) {
         </Alert>
       )}
 
-      {errorMessage && session.status === 'inactive' && (
+      {errorMessage && (
         <Alert className="border-red-200 bg-red-50">
           <AlertCircle className="h-4 w-4 text-red-600" />
           <AlertDescription className="text-red-800">{errorMessage}</AlertDescription>

@@ -1,0 +1,36 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BroadSandboxServiceAccessForTestingOnly",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:*",
+        "events:*",
+        "dynamodb:*",
+        "s3:*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadLambdaExecutionRole",
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetRole",
+        "iam:ListRoles"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "PassLambdaExecutionRole",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::ACCOUNT_ID:role/interns-lambda-execution-role",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "lambda.amazonaws.com"
+        }
+      }
+    }
+  ]
+}

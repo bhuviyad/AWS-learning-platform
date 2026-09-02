@@ -174,6 +174,15 @@ The Interns page is visible only to the admin email set in `VITE_ADMIN_EMAIL`.
 ### Learning progress
 Each intern’s lesson completion is stored separately in Supabase in `learning_progress`.
 
+### Stop Lab revocation
+Manual Stop Lab invokes the isolated CloudFormation-managed Lambda in `infra/aws/session-revoker/template.yaml`. It explicitly denies only the stopped session's `SessionId` principal tag, so other interns using the shared role continue working. The external AWS tab may remain visible, but its AWS actions are denied after IAM propagation.
+
+Render backend configuration:
+
+```env
+AWS_SESSION_REVOKER_FUNCTION_NAME=learninglab-session-revoker
+```
+
 ### Timeout cleanup
 Any session-scoped AWS resource created in the sandbox should be tagged with:
 - `Environment=LearningLab`

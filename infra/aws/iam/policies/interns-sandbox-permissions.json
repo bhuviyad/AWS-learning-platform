@@ -17,7 +17,10 @@
     {
       "Sid": "CreateTaggedLambda",
       "Effect": "Allow",
-      "Action": "lambda:CreateFunction",
+      "Action": [
+        "lambda:CreateFunction",
+        "lambda:TagResource"
+      ],
       "Resource": "arn:aws:lambda:ap-south-1:483591406604:function:learninglab-*",
       "Condition": {
         "StringEquals": {
@@ -66,7 +69,8 @@
       "Effect": "Allow",
       "Action": [
         "events:CreateEventBus",
-        "events:PutRule"
+        "events:PutRule",
+        "events:TagResource"
       ],
       "Resource": [
         "arn:aws:events:ap-south-1:483591406604:event-bus/learninglab-*",
@@ -122,7 +126,10 @@
     {
       "Sid": "CreateTaggedDynamoDbTable",
       "Effect": "Allow",
-      "Action": "dynamodb:CreateTable",
+      "Action": [
+        "dynamodb:CreateTable",
+        "dynamodb:TagResource"
+      ],
       "Resource": "arn:aws:dynamodb:ap-south-1:483591406604:table/learninglab-*",
       "Condition": {
         "StringEquals": {

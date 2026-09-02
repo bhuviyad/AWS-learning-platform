@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react';
-import { Book, FlaskConical, ShieldAlert, Users } from 'lucide-react';
+import { Book, FlaskConical, HelpCircle, ShieldAlert, Users } from 'lucide-react';
 import LearningPage from './components/LearningPage';
 import HandsOnLabPage from './components/HandsOnLabPage';
+import HelpPage from './components/HelpPage';
 import InternsPage from './components/InternsPage';
 import LoginPage from './components/LoginPage';
 import SignupPage from './components/SignupPage';
 import { Avatar, AvatarFallback } from './components/ui/avatar';
 import { Badge } from './components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './components/ui/card';
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from './components/ui/sheet';
 import { readCurrentUser, writeCurrentUser, clearCurrentUser, registerUser, authenticateUser } from './auth';
 import { isAdminEmail } from './lib/admin';
 import { signOutUserPresence, updateUserPresence } from './lib/presenceApi';
@@ -17,6 +19,7 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<{ id: string; name: string; email: string } | null>(stored);
   const [currentPage, setCurrentPage] = useState<'learning' | 'lab' | 'interns'>('learning');
   const [authView, setAuthView] = useState<'login' | 'signup'>('login');
+  const [helpOpen, setHelpOpen] = useState(false);
 
   const handleLogin = async (email: string, password: string) => {
     const result = await authenticateUser(email, password);
@@ -50,7 +53,7 @@ export default function App() {
     if (!currentUser) return;
 
     const sendHeartbeat = () => {
-      void updateUserPresence(currentUser, { currentPage });
+      void updateUserPresence(currentUser, { currentPage: helpOpen ? 'help' : currentPage });
     };
 
     sendHeartbeat();
@@ -64,7 +67,7 @@ export default function App() {
       window.clearInterval(interval);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [currentUser, currentPage]);
+  }, [currentUser, currentPage, helpOpen]);
 
   if (!currentUser) {
     return authView === 'login' ? (
@@ -186,6 +189,27 @@ export default function App() {
           )}
         </div>
       </main>
+
+      <Sheet open={helpOpen} onOpenChange={setHelpOpen}>
+        <SheetTrigger asChild>
+          <button
+            className="fixed bottom-5 left-5 z-40 flex items-center gap-2 rounded-full bg-orange-600 px-4 py-3 text-sm font-medium text-white shadow-lg transition hover:bg-orange-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500 focus-visible:ring-offset-2"
+            aria-label="Open AWS Lab Help"
+          >
+            <HelpCircle className="h-5 w-5" />
+            Help
+          </button>
+        </SheetTrigger>
+        <SheetContent side="left" className="w-[94vw] overflow-y-auto sm:max-w-2xl">
+          <SheetHeader className="border-b pr-12">
+            <SheetTitle>AWS Lab Help</SheetTitle>
+            <SheetDescription>Resource creation, exact tags, cleanup rules, and troubleshooting.</SheetDescription>
+          </SheetHeader>
+          <div className="px-4 pb-8">
+            <HelpPage />
+          </div>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

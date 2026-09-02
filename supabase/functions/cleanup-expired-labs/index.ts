@@ -1,4 +1,4 @@
-import { cleanupLabLambdaFunctions, createLambdaCleanupClient } from '../_shared/lambdaCleanup.ts';
+import { cleanupTaggedSandboxResources, createSandboxCleanupClients } from '../_shared/lambdaCleanup.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -18,9 +18,19 @@ export default async function (req: Request) {
   }
 
   try {
-    const client = createLambdaCleanupClient();
-    const cleanup = await cleanupLabLambdaFunctions({
-      client,
+    let clients;
+    try {
+      clients = createSandboxCleanupClients();
+    } catch (error) {
+      return json({
+        success: true,
+        skipped: true,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    const cleanup = await cleanupTaggedSandboxResources({
+      ...clients,
       mode: 'scheduled',
     });
 

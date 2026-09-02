@@ -44,7 +44,7 @@ function buildAssumeRoleBody(
   const params = new URLSearchParams({
     Action: 'AssumeRole',
     RoleArn: roleArn,
-    RoleSessionName: `lab-${sessionId.slice(0, 8)}`,
+    RoleSessionName: `lab-${sessionId.replace(/[^A-Za-z0-9+=,.@_-]/g, '-').slice(-48)}`,
     DurationSeconds: '900',
     Version: '2011-06-15',
   });

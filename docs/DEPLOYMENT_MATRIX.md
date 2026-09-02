@@ -84,6 +84,7 @@ Use Render for the hosted backend / scheduler runner.
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `ADMIN_EMAIL` (must match frontend `VITE_ADMIN_EMAIL`)
 - `AWS_LAMBDA_EXECUTION_ROLE_ARN`
+- `AWS_SESSION_REVOKER_FUNCTION_NAME=learninglab-session-revoker`
 - `LAB_ACCOUNT_ID`
 - `LAB_ACCOUNT_NAME`
 
@@ -94,6 +95,12 @@ Use Render for the hosted backend / scheduler runner.
 - `007_lab_session_cleanup_tracking.sql`
 - `008_local_user_lab_sessions.sql`
 - `009_admin_operations_dashboard.sql`
+- `010_session_revocation.sql`
+
+### Deploy session revoker
+1. Deploy `infra/aws/session-revoker/template.yaml` as a CloudFormation stack.
+2. Update the backend user's `LearningLabCleanupResources` policy.
+3. Set `AWS_SESSION_REVOKER_FUNCTION_NAME=learninglab-session-revoker` on Render.
 
 ### Add a cron job
 Create a Render cron job that runs every 5 minutes and calls:

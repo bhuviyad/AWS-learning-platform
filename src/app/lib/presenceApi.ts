@@ -1,6 +1,6 @@
 import type { AppUserIdentity } from './internProfiles';
 
-export type PlatformPage = 'learning' | 'lab' | 'interns';
+export type PlatformPage = 'learning' | 'lab' | 'help' | 'interns';
 
 export interface PresenceUpdate {
   currentPage?: PlatformPage;
